@@ -14,12 +14,12 @@ from textwrap import dedent
 import h5py
 import pandas as pd
 import numpy as np
-from numpy.lib.arraysetops import setdiff1d
+from numpy.lib.arraysetops import setdiff1d, union1d
 
 # MLDatabase imports
 from mldatabase import (
-    __version__, MASTER_FILE, MLD_NAME, N_OBJIDS, OBJID_NAME, OBJS_FILE,
-    PKG_NAME)
+    __version__, EXP_HEADER, EXP_REGEX, MASTER_FILE, MLD_NAME, N_OBJIDS,
+    OBJID_NAME, OBJS_FILE, PKG_NAME, REQ_FILES)
 
 # All declaration
 __all__ = ['main']
@@ -85,11 +85,8 @@ def init(args):
               "database!" % (args.dir))
         sys.exit()
 
-    # Create list of files that must be present for a database to be created
-    req_files = ['Exp0.csv', 'Exp0_xtr.csv']
-
     # Check if these files are present
-    for req_file in req_files:
+    for req_file in REQ_FILES:
         if not path.exists(path.join(args.dir, req_file)):
             # If not, raise error and exit
             print("ERROR: Provided DIR %r does not contain required files for "
@@ -117,7 +114,8 @@ def update(args):
 
     # Read in the first column of this file (which should be all objids)
     objids = pd.read_csv(ref_exp_file, skipinitialspace=True, header=None,
-                         usecols=[0], squeeze=True, dtype=np.int64)
+                         names=EXP_HEADER, usecols=['objid'], squeeze=True,
+                         dtype=np.int64, nrows=10000)
 
     # If objids contains no elements, raise error and exit
     if objids.empty:
@@ -131,17 +129,19 @@ def update(args):
     # Open the master HDF5-file, creating it if it does not exist yet
     master_name = path.join(args.mld, MASTER_FILE)
     with h5py.File(master_name, mode='a') as m_file:
-        # Check if an attribute called 'objids' already exists
-        if 'objids' in m_file.attrs:
-            # If so, take the difference between objids and this attribute
-            objids = setdiff1d(objids, m_file.attrs['objids'],
-                               assume_unique=True)
+        # Obtain the known objids
+        objids_known = m_file.get('objids', np.array([], dtype=int))
+        n_objids_known = len(objids_known)
+
+        # Take the difference and union between objids and the known ones
+        objids = setdiff1d(objids, objids_known, assume_unique=True)
+        objids_tot = union1d(objids, objids_known)
 
         # Assign all objids to the proper bins
         objid_bins = assign_objids(objids)
 
         # Loop over all bins in objid_bins and prepare their files
-        for (left, right), objids in objid_bins.items():
+        for (left, right), objids_bin in objid_bins.items():
             # Determine the file this bin belongs to
             objid_file = path.join(args.mld, OBJS_FILE.format(left, right))
 
@@ -154,9 +154,36 @@ def update(args):
                         path.basename(obj_file.filename), '/')
 
                 # Loop over all objids
-                for objid in objids:
+                for objid in objids_bin:
                     # Create a group for every objid in obj_file
                     obj_file.create_group(OBJID_NAME.format(objid))
+
+        # Save which objids the database knows about now
+        objids_dset = m_file.require_dataset('objids',
+                                             shape=(n_objids_known,),
+                                             dtype=int,
+                                             maxshape=(None,))
+        objids_dset.resize(objids_tot.size, axis=0)
+        objids_dset[n_objids_known:] = objids
+
+        # Obtain what exposures the database knows about
+        expnums_known = m_file.get('expnums', np.array([], dtype=int))
+        n_expnums_known = len(expnums_known)
+
+    # Obtain sorted string of all files available
+    filenames = str(sorted(next(os.walk(args.dir))[2]))
+
+    # Create a regex iterator
+    re_iter = re.finditer(EXP_REGEX, filenames)
+
+    # Create dict with all exposure files except those that are known
+    # TODO: Maybe save the last-modified date of every exposure and compare it
+    exp_dict = {int(m['expnum']): (m['exp_file'], m['xtr_file'])
+                for m in re_iter if int(m['expnum']) not in expnums_known}
+
+    # Process all exposure files
+    for expnum, exp_files in exp_dict.items():
+        process_exp_files(expnum, exp_files, args)
 
 
 # %% FUNCTION DEFINITIONS
@@ -187,6 +214,11 @@ def assign_objids(objids):
 
     # Return objid_bins
     return(objid_bins)
+
+
+# This function processes an exposure file
+def process_exp_files(expnum, exp_files, args):
+    print(expnum, exp_files)
 
 
 # %% MAIN FUNCTION
