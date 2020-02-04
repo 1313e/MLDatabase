@@ -112,32 +112,32 @@ def update(args):
         sys.exit()
     print(f"Updating micro-lensing database in {args.dir!r}.")
 
-#    # TODO: This does not belong here and must be removed later
-#    # Obtain sorted string of all files available
-#    filenames = str(sorted(next(os.walk(args.dir))[2])[:10])
-#
-#    # Create a regex iterator
-#    re_iter = re.finditer(EXP_REGEX, filenames)
-#
-#    # Create dict with all exposure files
-#    exp_dict = {int(m['expnum']): (path.join(args.dir, m['exp_file']),
-#                                   path.join(args.dir, m['xtr_file']))
-#                for m in re_iter}
-#
-#    # TODO: Remove this later
-#    key = list(exp_dict.keys())[0]
-#    exp_dict = {key: exp_dict[key]}
-#
-#    # Obtain path to reference exposure file
-#    ref_exp_file = path.join(args.dir, exp_dict[key][0])
+    # TODO: This does not belong here and must be removed later
+    # Obtain sorted string of all files available
+    filenames = str(sorted(next(os.walk(args.dir))[2])[:10])
+
+    # Create a regex iterator
+    re_iter = re.finditer(EXP_REGEX, filenames)
+
+    # Create dict with all exposure files
+    exp_dict = {int(m['expnum']): (path.join(args.dir, m['exp_file']),
+                                   path.join(args.dir, m['xtr_file']))
+                for m in re_iter}
+
+    # TODO: Remove this later
+    key = list(exp_dict.keys())[0]
+    exp_dict = {key: exp_dict[key]}
 
     # Obtain path to reference exposure file
-    ref_exp_file = path.join(args.dir, 'Exp0.csv')
+    ref_exp_file = path.join(args.dir, exp_dict[key][0])
+
+#    # Obtain path to reference exposure file
+#    ref_exp_file = path.join(args.dir, 'Exp0.csv')
 
     # Read in the first column of this file (which should be all objids)
     objids = pd.read_csv(ref_exp_file, skipinitialspace=True, header=None,
                          names=EXP_HEADER, usecols=['objid'], squeeze=True,
-                         dtype=EXP_HEADER)
+                         dtype=EXP_HEADER, nrows=10000)
 
     # If objids contains no elements, raise error and exit
     if objids.empty:
@@ -205,16 +205,16 @@ def update(args):
                                               maxshape=(None, 2))
         expnums_known = expnums_dset[:]
 
-    # Obtain sorted string of all files available
-    filenames = str(sorted(next(os.walk(args.dir))[2]))
-
-    # Create a regex iterator
-    re_iter = re.finditer(EXP_REGEX, filenames)
-
-    # Create dict with all exposure files
-    exp_dict = {int(m['expnum']): (path.join(args.dir, m['exp_file']),
-                                   path.join(args.dir, m['xtr_file']))
-                for m in re_iter}
+#    # Obtain sorted string of all files available
+#    filenames = str(sorted(next(os.walk(args.dir))[2]))
+#
+#    # Create a regex iterator
+#    re_iter = re.finditer(EXP_REGEX, filenames)
+#
+#    # Create dict with all exposure files
+#    exp_dict = {int(m['expnum']): (path.join(args.dir, m['exp_file']),
+#                                   path.join(args.dir, m['xtr_file']))
+#                for m in re_iter}
 
     # Initialize the number of exposures found and their types
     n_expnums = len(exp_dict)
@@ -244,10 +244,16 @@ def update(args):
     exp_iter = tqdm(exp_dict.items(), desc="Processing exposure files",
                     dynamic_ncols=True)
 
-    # Process all exposure files
+    # Open master file
     with h5py.File(args.master_file, 'r+') as m_file:
+        # Preemptively open all the objid files as well
+        # TODO: This only works if the file is in objid_bins
+        objid_files = {OBJS_BIN.format(*key): m_file[OBJS_BIN.format(*key)]
+                       for key in objid_bins.keys()}
+
+        # Process all exposure files
         for expnum, exp_files in exp_iter:
-            process_exp_files(m_file, expnum, exp_files, args)
+            process_exp_files(m_file, objid_files, expnum, exp_files, args)
 
         # Print that processing is finished
         print(f"The database now contains {m_file.attrs['n_expnums']} "
@@ -256,15 +262,15 @@ def update(args):
 
 # %% FUNCTION DEFINITIONS
 # This function returns the dataset belonging to a specified objid
-def get_objid_dataset(m_file, objid):
+def get_objid_dataset(objid_files, objid):
     """
-    Returns the :obj:`~h5py.Dataset` object in `m_file` that the provided
+    Returns the :obj:`~h5py.Dataset` object in `objid_files` that the provided
     `objid` belongs to.
 
     Parameters
     ----------
-    m_file : :obj:`~h5py.File` object
-        An open database master file.
+    objid_files : dict of :obj:`~h5py.Group` objects
+        A dict with all open object groups in the master file.
     objid : int
         The identifier of the requested object.
 
@@ -285,7 +291,7 @@ def get_objid_dataset(m_file, objid):
     objid_name = OBJID_NAME.format(objid)
 
     # Return corresponding dataset
-    return(m_file[f"{bin_name}/{objid_name}"])
+    return(objid_files[bin_name][objid_name])
 
 
 # This function determines which objid belongs to which objid interval/bin
@@ -318,14 +324,14 @@ def assign_objids(objids):
 
 
 # This function processes an exposure file
-def process_exp_files(m_file, expnum, exp_files, args):
+def process_exp_files(m_file, objid_files, expnum, exp_files, args):
     # Unpack exp_files
     exp_file, xtr_file = exp_files
 
     # Read in the exp_file
     exp_data = pd.read_csv(exp_file, skipinitialspace=True, header=None,
                            names=EXP_HEADER, index_col='objid', squeeze=True,
-                           dtype=EXP_HEADER)
+                           dtype=EXP_HEADER, nrows=10000)
 
     # Check if the 'expnum' column contains solely expnum
     if not (exp_data['expnum'] == expnum).all():
@@ -335,7 +341,7 @@ def process_exp_files(m_file, expnum, exp_files, args):
               f"exposures!")
         sys.exit()
 
-    # Convert the entire DataFrame to a NumPy array
+    # Convert the entire DataFrame to a NumPy record array
     objids = list(exp_data.index)
     exp_data = exp_data.to_records(index=False)
 
@@ -345,15 +351,16 @@ def process_exp_files(m_file, expnum, exp_files, args):
                      dynamic_ncols=True, position=1, leave=None)
     for objid, obs_data in data_iter:
         # Obtain the dataset of this objid
-        objid_dset = get_objid_dataset(m_file, objid)
+        objid_dset = get_objid_dataset(objid_files, objid)
 
         # Increase its size by 1
-        objid_dset.resize(objid_dset.size+1, axis=0)
+        objid_dset.resize(objid_dset.shape[0]+1, axis=0)
 
         # Assign all values
         objid_dset[-1] = obs_data
 
     # Save that this exposure has been processed
+    # TODO: Use Virtual Dataset for saving the exposure as well?
     m_file['expnums'].resize(m_file.attrs['n_expnums']+1, axis=0)
     m_file['expnums'][-1] = (expnum, path.getmtime(exp_file))
     m_file.attrs['n_expnums'] += 1
