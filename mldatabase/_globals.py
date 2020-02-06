@@ -13,7 +13,7 @@ from os import path
 
 # All declaration
 __all__ = ['DIR_PATH', 'EXP_HEADER', 'EXP_REGEX', 'MASTER_EXP_FILE',
-           'MASTER_FILE', 'MLD_NAME', 'PKG_NAME', 'REQ_FILES']
+           'MASTER_FILE', 'MLD_NAME', 'PKG_NAME', 'REQ_FILES', 'SIZE_SUFFIXES']
 
 
 # %% PACKAGE GLOBALS
@@ -43,3 +43,12 @@ MASTER_EXP_FILE = 'exp_master.hdf5'                 # Name of master exp file
 MLD_NAME = '.mldatabase'                            # Name of database folder
 PKG_NAME = 'MLDatabase'                             # Name of package
 REQ_FILES = ['Exp0.csv', 'Exp0_xtr.csv']            # Exposure files required
+SIZE_SUFFIXES = ['bytes',                           # File size suffixes
+                 'KiB',
+                 'MiB',
+                 'GiB',
+                 'TiB',
+                 'PiB',
+                 'EiB',
+                 'ZiB',
+                 'YiB']

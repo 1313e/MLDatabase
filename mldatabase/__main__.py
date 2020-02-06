@@ -7,6 +7,7 @@ import argparse
 import os
 from os import path
 import re
+import shutil
 import sys
 from textwrap import dedent
 
@@ -19,7 +20,7 @@ import vaex
 # MLDatabase imports
 from mldatabase import (
     __version__, EXP_HEADER, EXP_REGEX, MASTER_EXP_FILE, MASTER_FILE, MLD_NAME,
-    PKG_NAME, REQ_FILES)
+    PKG_NAME, REQ_FILES, SIZE_SUFFIXES)
 
 # All declaration
 __all__ = ['main']
@@ -79,11 +80,7 @@ class HelpFormatterWithSubCommands(argparse.ArgumentDefaultsHelpFormatter):
 # This function handles the 'init' subcommand
 def init(args):
     # Check if a database already exists in this folder
-    if path.exists(args.mld):
-        # If so, raise error and exit
-        print(f"ERROR: Provided DIR {args.dir!r} already contains a "
-              f"micro-lensing database!")
-        sys.exit()
+    check_database_exist(False, args)
 
     # Check if these files are present
     for req_file in REQ_FILES:
@@ -101,14 +98,96 @@ def init(args):
     update(args)
 
 
+# This function handles the 'query' subcommand
+def query(args):
+    # Check if a database already exists in this folder
+    check_database_exist(True, args)
+
+
+# This function handles the 'reset' subcommand
+def reset(args):
+    # Check if a database already exists in this folder
+    check_database_exist(True, args)
+
+    # Delete the entire database
+    shutil.rmtree(args.mld)
+
+    # Initialize the database
+    init(args)
+
+
+# This function handles the 'status' subcommand
+def status(args):
+    # Check if a database already exists in this folder
+    exists = path.exists(args.mld)
+
+    # Initialize empty list of statistics and empty string list
+    stat_list = []
+    str_list = []
+
+    # Add paths to stat_list
+    stat_list.append(('Paths',))
+    stat_list.append(('DIR', args.dir))
+    stat_list.append(('MLDatabase', args.mld if exists else 'N/A'))
+
+    # If the database exists, gather more statistics
+    if exists:
+        # Add category
+        stat_list.append(('Database',))
+
+        # Obtain database size
+        mld_size = path.getsize(args.master_exp_file)
+        size_order = int(np.log2(mld_size)//10) if mld_size else 0
+        size_val = mld_size/(1 << (size_order*10))
+        size_suffix = SIZE_SUFFIXES[size_order]
+        stat_list.append(('Size', f"{size_val:,.1f} {size_suffix}"))
+
+        # Open the master hdf5-file
+        with h5py.File(args.master_file, 'r') as m_file:
+            # Obtain relevant statistics
+            stat_list.append(('# of exposures', m_file.attrs['n_expnums']))
+            stat_list.append(('# of known objects', m_file.attrs['n_objids']))
+
+    # Determine the maximum length of all keys
+    width = max([len(stat[0]) for stat in stat_list if (len(stat) == 2)])
+
+    # Add header
+    str_list.append("DATABASE STATUS")
+    str_list.append('='*width)
+
+    # Process all gathered statistics
+    for stat in stat_list:
+        # If stat has a single argument, it is a category
+        if(len(stat) == 1):
+            str_list.append("")
+            str_list.append(f"{stat[0]}")
+            str_list.append('-'*width)
+
+        # Else, it has two values
+        else:
+            # Extract both values
+            key, value = stat
+
+            # Print proper
+            if isinstance(value, (int, float, np.integer, np.floating)):
+                str_list.append(f"{key: <{width}}\t{value:,}")
+            else:
+                str_list.append(f"{key: <{width}}\t{value}")
+
+    # Add final dividing line
+    str_list.append('='*width)
+
+    # Combine all strings in str_list together
+    status_str = '\n'.join(str_list)
+
+    # Print it
+    print(status_str)
+
+
 # This function handles the 'update' subcommand
 def update(args):
     # Check if a database already exists in this folder
-    if not path.exists(args.mld):
-        # If not, raise error and exit
-        print(f"ERROR: Provided DIR {args.dir!r} does not contain a "
-              f"micro-lensing database!")
-        sys.exit()
+    check_database_exist(True, args)
     print(f"Updating micro-lensing database in {args.dir!r}.")
 
 #    # Obtain path to reference exposure file
@@ -126,7 +205,6 @@ def update(args):
 #        sys.exit()
 
     # Open the master HDF5-file, creating it if it does not exist yet
-    args.master_file = path.join(args.mld, MASTER_FILE)
     with h5py.File(args.master_file, mode='a') as m_file:
         # Set the version of MLDatabase
         mld_version = m_file.attrs.setdefault('version', __version__)
@@ -141,7 +219,7 @@ def update(args):
         expnums_known = expnums_dset[:]
 
     # Obtain sorted string of all files available
-    filenames = str(sorted(next(os.walk(args.dir))[2])[:14])
+    filenames = str(sorted(next(os.walk(args.dir))[2])[:10])
 
     # Create a regex iterator
     re_iter = re.finditer(EXP_REGEX, filenames)
@@ -153,7 +231,7 @@ def update(args):
 
     # Initialize the number of exposures found and their types
     n_expnums = len(exp_dict)
-    n_expnums_outdated = 0
+    expnums_outdated = []
 
     # Determine which ones require updating
     for expnum, mtime in expnums_known:
@@ -164,95 +242,121 @@ def update(args):
         if exp_files is not None:
             # Check if it requires updating by comparing last-modified times
             if(path.getmtime(exp_files[0]) > mtime):
-                # If so, increase n_expnums_outdated by 1
-                n_expnums_outdated += 1
+                # If so, add to expnums_outdated
+                expnums_outdated.append(expnum)
             else:
                 # If not, remove from dict
                 exp_dict.pop(expnum)
 
     # Print the number of exposure files found
+    n_expnums_outdated = len(expnums_outdated)
     n_expnums_new = len(exp_dict)-n_expnums_outdated
     print(f"Found {n_expnums:,} exposure files, of which {n_expnums_new:,} are"
           f" new and {n_expnums_outdated:,} are outdated.")
 
-    # Create tqdm iterator for processing
-    exp_iter = tqdm(exp_dict.items(), desc="Processing exposure files",
-                    dynamic_ncols=True)
+    # If exp_dict contains at least 1 item
+    if exp_dict:
+        # Create tqdm iterator for processing
+        exp_iter = tqdm(exp_dict.items(), desc="Processing exposure files",
+                        dynamic_ncols=True)
 
-    # Create empty list of temporary HDF5-files
-    temp_files = []
+        # Create empty list of temporary HDF5-files
+        temp_files = []
 
-    # Open master file
-    with h5py.File(args.master_file, 'r+') as m_file:
-        # Process all exposure files
-        try:
-            for expnum, exp_files in exp_iter:
-                # Set which exposure is being processed in exp_iter
-                exp_iter.set_postfix_str(path.basename(exp_files[0]))
+        # Open master file
+        with h5py.File(args.master_file, 'r+') as m_file:
+            # Process all exposure files
+            try:
+                for expnum, exp_files in exp_iter:
+                    # Set which exposure is being processed in exp_iter
+                    exp_iter.set_postfix_str(path.basename(exp_files[0]))
 
-                # Process this exposure
-                temp_files.append(
-                    process_exp_files(m_file, expnum, exp_files, args))
+                    # Process this exposure
+                    temp_files.append(
+                        process_exp_files(m_file, expnum, exp_files, args))
 
-        # If a KeyboardInterrupt is raised, update database with progress
-        except KeyboardInterrupt:
-            print("WARNING: Processing has been interrupted. Updating database"
-                  " with currently processed exposures.")
+            # If a KeyboardInterrupt is raised, update database with progress
+            except KeyboardInterrupt:
+                print("WARNING: Processing has been interrupted. Updating "
+                      "database with currently processed exposures.")
 
-        # Obtain the total number of exposures now
-        n_expnums_known = m_file.attrs['n_expnums']
+            # Obtain the total number of exposures now
+            n_expnums_known = m_file.attrs['n_expnums']
 
-    # Determine name of master exposure file
-    master_exp_file = path.join(args.mld, MASTER_EXP_FILE)
+        # Update database
+        print("Updating database with processed exposures.")
 
-    # If the master exposure file already exists, add it to temp_files
-    if path.exists(master_exp_file):
-        temp_files.insert(0, master_exp_file)
+        # Open all temporary exposure HDF5-files
+        temp_df = vaex.open_many(temp_files)
 
-    # Open all exposure HDF5-files that exist and combine into single DataFrame
-    master_df = vaex.open_many(temp_files)
+        # If the master exposure file already exists, open it
+        if path.exists(args.master_exp_file):
+            # Add master_exp_file to temp_files
+            temp_files.insert(0, args.master_exp_file)
 
-    # Export to HDF5
-    master_temp_file = path.join(args.mld, 'temp.hdf5')
-    master_df.export_hdf5(master_temp_file)
+            # Open the master exposure file
+            master_df = vaex.open(args.master_exp_file)
 
-    # Determine all objids that are known
-    print("Determining all objects in the database.")
-    objids, counts = np.unique(master_df['objid'].values, return_counts=True)
+            # Solely select the exposures that were not outdated
+            for expnum in expnums_outdated:
+                master_df = master_df.filter(master_df.expnum != expnum, 'and')
 
-    # Close all temporary HDF5-files
-    master_df.close_files()
+            # Extract the master DataFrame
+            master_df = master_df.extract()
 
-    # Remove all temporary files
-    for temp_file in temp_files:
-        os.remove(temp_file)
+            # Concatenate the two DataFrames
+            master_df = master_df.concat(temp_df)
 
-    # Rename master_temp_file to master exposure file name
-    os.rename(master_temp_file, master_exp_file)
+        # If not, master_df is equal to temp_df
+        else:
+            master_df = temp_df
 
-    # Open master file
-    with h5py.File(args.master_file, 'r+') as m_file:
-        # Obtain previously known objids
-        n_objids_known = m_file.attrs.setdefault('n_objids', 0)
-        objids_dset = m_file.require_dataset('objids',
-                                             shape=(n_objids_known,),
-                                             dtype=[('objid', int),
-                                                    ('count', int)],
-                                             maxshape=(None,))
+        # Export to HDF5
+        master_temp_file = path.join(args.mld, 'temp.hdf5')
+        master_df.export_hdf5(master_temp_file)
 
-        # Save currently known objids
-        n_objids = len(objids)
-        objids_dset.resize(n_objids, axis=0)
-        objids_dset['objid'] = objids
-        objids_dset['count'] = counts
-        m_file.attrs['n_objids'] = n_objids
+        # Determine all objids that are known
+        print("Determining all objects in the database.")
+        objids, counts = np.unique(master_df['objid'].values,
+                                   return_counts=True)
 
-        # Obtain the total number of exposures now
-        n_expnums = m_file.attrs['n_expnums']
+        # Close all temporary HDF5-files
+        master_df.close_files()
 
-    # Print that processing is finished
-    print(f"The database now contains {n_expnums:,} exposures with "
-          f"{n_objids:,} objects.")
+        # Remove all temporary files
+        for temp_file in temp_files:
+            os.remove(temp_file)
+
+        # Rename master_temp_file to master exposure file name
+        os.rename(master_temp_file, args.master_exp_file)
+
+        # Open master file
+        with h5py.File(args.master_file, 'r+') as m_file:
+            # Obtain previously known objids
+            n_objids_known = m_file.attrs.setdefault('n_objids', 0)
+            objids_dset = m_file.require_dataset('objids',
+                                                 shape=(n_objids_known,),
+                                                 dtype=[('objid', int),
+                                                        ('count', int)],
+                                                 maxshape=(None,))
+
+            # Save currently known objids
+            n_objids = len(objids)
+            objids_dset.resize(n_objids, axis=0)
+            objids_dset['objid'] = objids
+            objids_dset['count'] = counts
+            m_file.attrs['n_objids'] = n_objids
+
+            # Obtain the total number of exposures now
+            n_expnums = m_file.attrs['n_expnums']
+
+        # Print that processing is finished
+        print(f"The database now contains {n_expnums:,} exposures with "
+              f"{n_objids:,} objects.")
+
+    # If no new exposure files are found, database is already up-to-date
+    else:
+        print("Database is already up-to-date.")
 
 
 # %% FUNCTION DEFINITIONS
@@ -278,13 +382,42 @@ def process_exp_files(m_file, expnum, exp_files, args):
     exp_file_hdf5 = path.join(args.mld, f'exp{expnum}.hdf5')
     exp_data.export_hdf5(exp_file_hdf5)
 
+    # Check if this exposure has been processed before
+    index = np.nonzero(m_file['expnums']['expnum'] == expnum)
+
     # Save that this exposure has been processed
-    m_file['expnums'].resize(m_file.attrs['n_expnums']+1, axis=0)
-    m_file['expnums'][-1] = (expnum, path.getmtime(exp_file))
-    m_file.attrs['n_expnums'] += 1
+    if index:
+        m_file['expnums'][index[0][0]] = (expnum, path.getmtime(exp_file))
+    else:
+        m_file['expnums'].resize(m_file.attrs['n_expnums']+1, axis=0)
+        m_file['expnums'][-1] = (expnum, path.getmtime(exp_file))
+        m_file.attrs['n_expnums'] += 1
 
     # Return exp_file_hdf5
     return(exp_file_hdf5)
+
+
+# This function checks if the database exists and proceeds accordingly
+def check_database_exist(req, args):
+    # Check if the database exists
+    exists = path.exists(args.mld)
+
+    # If exists and req are equal, return
+    if req is exists:
+        return
+
+    # Else, raise the proper error
+    else:
+        # If database exists
+        if exists:
+            print(f"ERROR: Provided DIR {args.dir!r} already contains a "
+                  f"micro-lensing database!")
+            sys.exit()
+        # If database does not exist
+        else:
+            print(f"ERROR: Provided DIR {args.dir!r} does not contain a "
+                  f"micro-lensing database!")
+            sys.exit()
 
 
 # %% MAIN FUNCTION
@@ -334,6 +467,51 @@ def main():
     # Set defaults for init_parser
     init_parser.set_defaults(func=init)
 
+    # QUERY COMMAND
+    # Add query subparser
+    query_parser = subparsers.add_parser(
+        'query',
+        description="Query an existing micro-lensing database in DIR",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        add_help=True)
+
+    # Set defaults for query_parser
+    query_parser.set_defaults(func=query)
+
+    # RESET COMMAND
+    # Add reset subparser
+    reset_parser = subparsers.add_parser(
+        'reset',
+        description=("Delete and reinitialize an existing micro-lensing "
+                     "database in DIR"),
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        add_help=True)
+
+    # Set defaults for reset_parser
+    reset_parser.set_defaults(func=reset)
+
+    # SEARCH COMMAND
+    # Add search subparser
+    search_parser = subparsers.add_parser(
+        'search',
+        description="Alias for 'query'",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        add_help=True)
+
+    # Set defaults for search_parser
+    search_parser.set_defaults(func=query)
+
+    # STATUS COMMAND
+    # Add status subparser
+    status_parser = subparsers.add_parser(
+        'status',
+        description="Show the status of the micro-lensing database in DIR",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        add_help=True)
+
+    # Set defaults for status_parser
+    status_parser.set_defaults(func=status)
+
     # UPDATE COMMAND
     # Add update subparser
     update_parser = subparsers.add_parser(
@@ -359,6 +537,8 @@ def main():
 
     # Obtain absolute path to database
     args.mld = path.join(args.dir, MLD_NAME)
+    args.master_file = path.join(args.mld, MASTER_FILE)
+    args.master_exp_file = path.join(args.mld, MASTER_EXP_FILE)
 
     # If arguments is empty (no func was provided), show help
     if 'func' not in args:
