@@ -11,17 +11,18 @@ Globals
 # Built-in imports
 from os import path
 
-# Package imports
-import numpy as np
-
 # All declaration
-__all__ = ['DIR_PATH', 'EXP_HEADER', 'EXP_REGEX', 'MASTER_EXP_FILE',
-           'MASTER_FILE', 'MLD_NAME', 'PKG_NAME', 'REQ_FILES', 'SIZE_SUFFIXES',
-           'XTR_HEADER']
+__all__ = ['DIR_PATH', 'EXIT_KEYWORDS', 'EXP_HEADER', 'EXP_REGEX',
+           'MASTER_EXP_FILE', 'MASTER_FILE', 'MLD_NAME', 'PKG_NAME',
+           'REQ_FILES', 'SIZE_SUFFIXES', 'XTR_HEADER']
 
 
 # %% PACKAGE GLOBALS
 DIR_PATH = path.abspath(path.dirname(__file__))     # Path to this directory
+EXIT_KEYWORDS = ['exit',                            # Exit prompt keywords
+                 'exit()',
+                 'quit',
+                 'q']
 EXP_HEADER = {                                      # Header of exposure file
     'objid': int,
     'hjd': float,

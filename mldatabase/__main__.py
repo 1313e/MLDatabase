@@ -16,13 +16,16 @@ import time
 import h5py
 import numpy as np
 import pandas as pd
+import prompt_toolkit as ptk
+from prompt_toolkit.completion import WordCompleter
+from prompt_toolkit.history import FileHistory
 from tqdm import tqdm
 import vaex
 
 # MLDatabase imports
 from mldatabase import (
-    __version__, EXP_HEADER, EXP_REGEX, MASTER_EXP_FILE, MASTER_FILE, MLD_NAME,
-    PKG_NAME, REQ_FILES, SIZE_SUFFIXES, XTR_HEADER)
+    __version__, EXIT_KEYWORDS, EXP_HEADER, EXP_REGEX, MASTER_EXP_FILE,
+    MASTER_FILE, MLD_NAME, PKG_NAME, REQ_FILES, SIZE_SUFFIXES, XTR_HEADER)
 
 # All declaration
 __all__ = ['main']
@@ -104,6 +107,32 @@ def init(args):
 def query(args):
     # Check if a database already exists in this folder
     check_database_exist(True, args)
+
+    # Create list of valid keywords
+    keywords = [*EXIT_KEYWORDS, 'prop']
+
+    # Initialize CLI objects
+    completer = WordCompleter(keywords)
+
+    # Initialize query session
+    session = ptk.PromptSession(
+        bottom_toolbar=("Type 'help' for an overview of all valid keywords. "
+                        "Type 'exit' to exit the session."),
+        history=FileHistory(path.join(args.mld, 'history.txt')),
+        enable_history_search=True,
+        completer=completer)
+
+    # Keep looping over the prompts until exited by the user
+    while True:
+        # Prompt for an input from the user
+        inputs = session.prompt()
+
+        # Check if the user wishes to exit, and break the loop if so
+        if inputs in EXIT_KEYWORDS:
+            break
+
+        # Process the inputs of the user
+        process_query_inputs(inputs, args)
 
 
 # This function handles the 'reset' subcommand
@@ -415,6 +444,11 @@ def process_exp_files(m_file, expnum, exp_files, args):
 
     # Return exp_file_hdf5
     return(exp_file_hdf5)
+
+
+# This function processes the inputs given by the user in the query session
+def process_query_inputs(inputs, args):
+    pass
 
 
 # This function checks if the database exists and proceeds accordingly
