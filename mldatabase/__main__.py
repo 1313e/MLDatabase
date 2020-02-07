@@ -10,17 +10,19 @@ import re
 import shutil
 import sys
 from textwrap import dedent
+import time
 
 # Package imports
 import h5py
 import numpy as np
+import pandas as pd
 from tqdm import tqdm
 import vaex
 
 # MLDatabase imports
 from mldatabase import (
     __version__, EXP_HEADER, EXP_REGEX, MASTER_EXP_FILE, MASTER_FILE, MLD_NAME,
-    PKG_NAME, REQ_FILES, SIZE_SUFFIXES)
+    PKG_NAME, REQ_FILES, SIZE_SUFFIXES, XTR_HEADER)
 
 # All declaration
 __all__ = ['main']
@@ -142,6 +144,11 @@ def status(args):
         size_suffix = SIZE_SUFFIXES[size_order]
         stat_list.append(('Size', f"{size_val:,.1f} {size_suffix}"))
 
+        # Add 'last updated' stat
+        mtime = time.localtime(path.getmtime(args.master_exp_file))
+        stat_list.append(('Last updated',
+                          time.strftime('%a %d %b %Y %H:%M:%S %Z', mtime)))
+
         # Open the master hdf5-file
         with h5py.File(args.master_file, 'r') as m_file:
             # Obtain relevant statistics
@@ -211,11 +218,12 @@ def update(args):
 
         # Obtain what exposures the database knows about
         n_expnums_known = m_file.attrs.setdefault('n_expnums', 0)
-        expnums_dset = m_file.require_dataset('expnums',
-                                              shape=(n_expnums_known,),
-                                              dtype=[('expnum', int),
-                                                     ('last_modified', int)],
-                                              maxshape=(None,))
+        expnums_dset =\
+            m_file.require_dataset('expnums',
+                                   shape=(n_expnums_known,),
+                                   dtype=[*list(XTR_HEADER.items())[:-1],
+                                          ('last_modified', int)],
+                                   maxshape=(None,))
         expnums_known = expnums_dset[:]
 
     # Obtain sorted string of all files available
@@ -229,12 +237,16 @@ def update(args):
                                    path.join(args.dir, m['xtr_file']))
                 for m in re_iter}
 
+    # Add the required flat exposure files (REGEX above explicitly ignores it)
+#    exp_dict[0] = (path.join(args.dir, REQ_FILES[0]),
+#                   path.join(args.dir, REQ_FILES[1]))
+
     # Initialize the number of exposures found and their types
     n_expnums = len(exp_dict)
     expnums_outdated = []
 
     # Determine which ones require updating
-    for expnum, mtime in expnums_known:
+    for expnum, *_, mtime in expnums_known:
         # Try to obtain the exp_files of this expnum
         exp_files = exp_dict.get(expnum)
 
@@ -366,9 +378,15 @@ def process_exp_files(m_file, expnum, exp_files, args):
     exp_file, xtr_file = exp_files
 
     # Read in the exp_file
-    exp_data = vaex.read_csv(exp_file, skipinitialspace=True, header=None,
+    exp_data = vaex.from_csv(exp_file, skipinitialspace=True, header=None,
                              names=EXP_HEADER, squeeze=True, dtype=EXP_HEADER,
                              copy_index=False)
+
+    # Read in the xtr_file
+    xtr_data = pd.read_csv(xtr_file, skipinitialspace=True, header=None,
+                           names=XTR_HEADER, squeeze=True, dtype=XTR_HEADER,
+                           usecols=range(len(XTR_HEADER)-1))
+    xtr_data = xtr_data.to_numpy()[0]
 
     # Check if the 'expnum' column contains solely expnum
     if not (exp_data['expnum'] == expnum).evaluate().all():
@@ -383,14 +401,16 @@ def process_exp_files(m_file, expnum, exp_files, args):
     exp_data.export_hdf5(exp_file_hdf5)
 
     # Check if this exposure has been processed before
-    index = np.nonzero(m_file['expnums']['expnum'] == expnum)
+    expnums = m_file['expnums']['expnum']
+    expnums = expnums if expnums.size else expnums['expnum']
+    index = np.nonzero(expnums == expnum)[0]
 
     # Save that this exposure has been processed
-    if index:
-        m_file['expnums'][index[0][0]] = (expnum, path.getmtime(exp_file))
+    if index.size:
+        m_file['expnums'][index[0]] = (*xtr_data, path.getmtime(exp_file))
     else:
         m_file['expnums'].resize(m_file.attrs['n_expnums']+1, axis=0)
-        m_file['expnums'][-1] = (expnum, path.getmtime(exp_file))
+        m_file['expnums'][-1] = (*xtr_data, path.getmtime(exp_file))
         m_file.attrs['n_expnums'] += 1
 
     # Return exp_file_hdf5

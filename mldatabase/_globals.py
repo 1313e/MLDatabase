@@ -8,12 +8,16 @@ Globals
 
 
 # %% IMPORTS
-# Package imports
+# Built-in imports
 from os import path
+
+# Package imports
+import numpy as np
 
 # All declaration
 __all__ = ['DIR_PATH', 'EXP_HEADER', 'EXP_REGEX', 'MASTER_EXP_FILE',
-           'MASTER_FILE', 'MLD_NAME', 'PKG_NAME', 'REQ_FILES', 'SIZE_SUFFIXES']
+           'MASTER_FILE', 'MLD_NAME', 'PKG_NAME', 'REQ_FILES', 'SIZE_SUFFIXES',
+           'XTR_HEADER']
 
 
 # %% PACKAGE GLOBALS
@@ -52,3 +56,12 @@ SIZE_SUFFIXES = ['bytes',                           # File size suffixes
                  'EiB',
                  'ZiB',
                  'YiB']
+XTR_HEADER = {                                      # Header of xtr/epochs file
+    'expnum': int,
+    'hjd': float,
+    'skypc2': float,
+    'skypc5': float,
+    'skypc10': float,
+    'skypc90': float,
+    'filter': '|S10',
+    'fitsname': '|S80'}
