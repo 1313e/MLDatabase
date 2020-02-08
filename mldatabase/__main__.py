@@ -256,7 +256,8 @@ def update(args):
         expnums_known = expnums_dset[:]
 
     # Obtain sorted string of all files available
-    filenames = str(sorted(next(os.walk(args.dir))[2])[:10])
+    filenames = str(sorted(next(os.walk(args.dir))[2]))
+#    filenames = str(sorted(next(os.walk(args.dir))[2])[:10])   # Only select the first 10 files found
 
     # Create a regex iterator
     re_iter = re.finditer(EXP_REGEX, filenames)
