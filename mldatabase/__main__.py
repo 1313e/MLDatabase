@@ -11,27 +11,35 @@ import shutil
 import sys
 from textwrap import dedent
 import time
+from traceback import print_exc
 
 # Package imports
+import IPython
 import h5py
 import numpy as np
 import pandas as pd
 import prompt_toolkit as ptk
+from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import WordCompleter
 from prompt_toolkit.history import FileHistory
+from prompt_toolkit.validation import DummyValidator
 from tqdm import tqdm
 import vaex
 
 # MLDatabase imports
 from mldatabase import (
     __version__, EXIT_KEYWORDS, EXP_HEADER, EXP_REGEX, MASTER_EXP_FILE,
-    MASTER_FILE, MLD_NAME, PKG_NAME, REQ_FILES, SIZE_SUFFIXES, XTR_HEADER)
+    MASTER_FILE, MLD_NAME, PKG_NAME, REQ_FILES, SIZE_SUFFIXES, TEMP_EXP_FILE,
+    XTR_HEADER)
 
 # All declaration
 __all__ = ['main']
 
 
 # %% GLOBALS
+# Define global arguments that holds all arguments given to parser
+global ARGS
+
 # Define the main help docstring
 main_description = dedent("")
 
@@ -83,74 +91,130 @@ class HelpFormatterWithSubCommands(argparse.ArgumentDefaultsHelpFormatter):
 
 # %% COMMAND FUNCTION DEFINITIONS
 # This function handles the 'init' subcommand
-def init(args):
+def cli_init():
     # Check if a database already exists in this folder
-    check_database_exist(False, args)
+    check_database_exist(False, ARGS)
 
     # Check if these files are present
     for req_file in REQ_FILES:
-        if not path.exists(path.join(args.dir, req_file)):
+        if not path.exists(path.join(ARGS.dir, req_file)):
             # If not, raise error and exit
-            print(f"ERROR: Provided DIR {args.dir!r} does not contain required"
+            print(f"ERROR: Provided DIR {ARGS.dir!r} does not contain required"
                   f" files for micro-lensing database!")
             sys.exit()
 
     # Make the database directory
-    print(f"Initializing micro-lensing database in {args.dir!r}.")
-    os.mkdir(args.mld)
+    print(f"Initializing micro-lensing database in {ARGS.dir!r}.")
+    os.mkdir(ARGS.mld)
 
     # Update the database
-    update(args)
+    cli_update()
+
+
+# This function handles the 'ipython' subcommand
+def cli_ipython():
+    # Check if a database already exists in this folder
+    check_database_exist(True)
+
+    # Use global ARGS
+    global ARGS
+
+    # Load the database
+    df = vaex.open(ARGS.master_exp_file)
+
+    # Add df to ARGS
+    ARGS.df = df
+
+    # Embed an IPython console
+    IPython.embed(
+        banner1=("Starting IPython session. Database is available as 'df', a "
+                 "vaex DataFrame.\n"
+                 "See https://vaex.readthedocs.io/en/latest/tutorial.html "
+                 "for how to interact with vaex DataFrames.\n"),
+        exit_msg="Leaving IPython session. Database will be closed.",
+        colors='Neutral')
+
+    # Close DataFrame after IPython session has ended
+    df.close_files()
 
 
 # This function handles the 'query' subcommand
-def query(args):
+def cli_query():
     # Check if a database already exists in this folder
-    check_database_exist(True, args)
+    check_database_exist(True)
 
-    # Create list of valid keywords
-    keywords = [*EXIT_KEYWORDS, 'prop']
+    # Use global ARGS
+    global ARGS
 
-    # Initialize CLI objects
-    completer = WordCompleter(keywords)
+    # Load the database
+    df = vaex.open(ARGS.master_exp_file)
 
-    # Initialize query session
-    session = ptk.PromptSession(
-        bottom_toolbar=("Type 'help' for an overview of all valid keywords. "
-                        "Type 'exit' to exit the session."),
-        history=FileHistory(path.join(args.mld, 'history.txt')),
-        enable_history_search=True,
-        completer=completer)
+    # Add df to ARGS
+    ARGS.df = df
 
-    # Keep looping over the prompts until exited by the user
-    while True:
-        # Prompt for an input from the user
-        inputs = session.prompt()
+    # Wrap in try-statement to ensure DataFrame is closed afterward
+    try:
+        # Create list of valid keywords
+        keywords = [*EXIT_KEYWORDS, 'help']
 
-        # Check if the user wishes to exit, and break the loop if so
-        if inputs in EXIT_KEYWORDS:
-            break
+        # Initialize CLI objects
+        # TODO: Write auto-suggest only matching against allowed words
+        auto_suggest = AutoSuggestFromHistory()
+        completer = WordCompleter(keywords)
+        validator = DummyValidator()
 
-        # Process the inputs of the user
-        process_query_inputs(inputs, args)
+        # Start session
+        session = ptk.PromptSession(
+            message='query> ',
+            bottom_toolbar=("Type 'help' for an overview of all valid "
+                            "keywords. Type 'exit' to exit the session."),
+            history=FileHistory(path.join(ARGS.mld, 'history.txt')),
+            enable_history_search=True,
+            auto_suggest=auto_suggest,
+            completer=completer,
+            complete_while_typing=False,
+            validator=validator,
+            validate_while_typing=True)
+
+        # Keep looping over the prompts until exited by the user
+        while True:
+            # Wrap in try-statement to catch and simply print exception
+            try:
+                # Prompt for an input from the user
+                inputs = session.prompt()
+
+                # Check if the user wants to exit, and break the loop if so
+                if inputs in EXIT_KEYWORDS:
+                    break
+
+                # Process the inputs of the user
+                process_query_inputs(inputs)
+
+            # If an exception is raised, simply print the entire traceback
+            except Exception:
+                print_exc()
+
+    # Close DataFrame after query session has ended
+    finally:
+        df.close_files()
 
 
 # This function handles the 'reset' subcommand
-def reset(args):
+def cli_reset():
     # Check if a database already exists in this folder
-    check_database_exist(True, args)
+    check_database_exist(True)
 
     # Delete the entire database
-    shutil.rmtree(args.mld)
+    shutil.rmtree(ARGS.mld)
 
     # Initialize the database
-    init(args)
+    cli_init()
 
 
 # This function handles the 'status' subcommand
-def status(args):
+def cli_status():
     # Check if a database already exists in this folder
-    exists = path.exists(args.mld)
+    exists = path.exists(ARGS.mld)
 
     # Initialize empty list of statistics and empty string list
     stat_list = []
@@ -158,8 +222,8 @@ def status(args):
 
     # Add paths to stat_list
     stat_list.append(('Paths',))
-    stat_list.append(('DIR', args.dir))
-    stat_list.append(('MLDatabase', args.mld if exists else 'N/A'))
+    stat_list.append(('DIR', ARGS.dir))
+    stat_list.append(('MLDatabase', ARGS.mld if exists else 'N/A'))
 
     # If the database exists, gather more statistics
     if exists:
@@ -167,19 +231,19 @@ def status(args):
         stat_list.append(('Database',))
 
         # Obtain database size
-        mld_size = path.getsize(args.master_exp_file)
+        mld_size = path.getsize(ARGS.master_exp_file)
         size_order = int(np.log2(mld_size)//10) if mld_size else 0
         size_val = mld_size/(1 << (size_order*10))
         size_suffix = SIZE_SUFFIXES[size_order]
         stat_list.append(('Size', f"{size_val:,.1f} {size_suffix}"))
 
         # Add 'last updated' stat
-        mtime = time.localtime(path.getmtime(args.master_exp_file))
+        mtime = time.localtime(path.getmtime(ARGS.master_exp_file))
         stat_list.append(('Last updated',
                           time.strftime('%a %d %b %Y %H:%M:%S %Z', mtime)))
 
         # Open the master hdf5-file
-        with h5py.File(args.master_file, 'r') as m_file:
+        with h5py.File(ARGS.master_file, 'r') as m_file:
             # Obtain relevant statistics
             stat_list.append(('# of exposures', m_file.attrs['n_expnums']))
             stat_list.append(('# of known objects', m_file.attrs['n_objids']))
@@ -221,13 +285,13 @@ def status(args):
 
 
 # This function handles the 'update' subcommand
-def update(args):
+def cli_update():
     # Check if a database already exists in this folder
-    check_database_exist(True, args)
-    print(f"Updating micro-lensing database in {args.dir!r}.")
+    check_database_exist(True)
+    print(f"Updating micro-lensing database in {ARGS.dir!r}.")
 
 #    # Obtain path to reference exposure file
-#    ref_exp_file = path.join(args.dir, 'Exp0.csv')
+#    ref_exp_file = path.join(ARGS.dir, 'Exp0.csv')
 
 #    # Read in the first column of this file (which should be all objids)
 #    objids = pd.read_csv(ref_exp_file, skipinitialspace=True, header=None,
@@ -241,7 +305,7 @@ def update(args):
 #        sys.exit()
 
     # Open the master HDF5-file, creating it if it does not exist yet
-    with h5py.File(args.master_file, mode='a') as m_file:
+    with h5py.File(ARGS.master_file, mode='a') as m_file:
         # Set the version of MLDatabase
         mld_version = m_file.attrs.setdefault('version', __version__)
 
@@ -256,24 +320,27 @@ def update(args):
         expnums_known = expnums_dset[:]
 
     # Obtain sorted string of all files available
-    filenames = str(sorted(next(os.walk(args.dir))[2]))
-#    filenames = str(sorted(next(os.walk(args.dir))[2])[:10])   # Only select the first 10 files found
+#    filenames = str(sorted(next(os.walk(ARGS.dir))[2]))
+    filenames = str(sorted(next(os.walk(ARGS.dir))[2])[:10])   # Only select the first 10 files found
 
     # Create a regex iterator
     re_iter = re.finditer(EXP_REGEX, filenames)
 
     # Create dict with all exposure files
-    exp_dict = {int(m['expnum']): (path.join(args.dir, m['exp_file']),
-                                   path.join(args.dir, m['xtr_file']))
+    exp_dict = {int(m['expnum']): (path.join(ARGS.dir, m['exp_file']),
+                                   path.join(ARGS.dir, m['xtr_file']))
                 for m in re_iter}
 
     # Add the required flat exposure files (REGEX above explicitly ignores it)
-#    exp_dict[0] = (path.join(args.dir, REQ_FILES[0]),
-#                   path.join(args.dir, REQ_FILES[1]))
+#    exp_dict[0] = (path.join(ARGS.dir, REQ_FILES[0]),
+#                   path.join(ARGS.dir, REQ_FILES[1]))
 
     # Initialize the number of exposures found and their types
     n_expnums = len(exp_dict)
     expnums_outdated = []
+
+    # Create empty list of temporary HDF5-files
+    temp_files = []
 
     # Determine which ones require updating
     for expnum, *_, mtime in expnums_known:
@@ -290,23 +357,27 @@ def update(args):
                 # If not, remove from dict
                 exp_dict.pop(expnum)
 
+                # Determine path to temporary HDF5-file of exposure
+                temp_hdf5 = path.join(ARGS.mld, TEMP_EXP_FILE.format(expnum))
+
+                # If it already exists, add it to temp_files
+                if path.exists(temp_hdf5):
+                    temp_files.append(temp_hdf5)
+
     # Print the number of exposure files found
     n_expnums_outdated = len(expnums_outdated)
     n_expnums_new = len(exp_dict)-n_expnums_outdated
     print(f"Found {n_expnums:,} exposure files, of which {n_expnums_new:,} are"
           f" new and {n_expnums_outdated:,} are outdated.")
 
-    # If exp_dict contains at least 1 item
-    if exp_dict:
+    # If exp_dict or temp_files contains at least 1 item
+    if exp_dict or temp_files:
         # Create tqdm iterator for processing
         exp_iter = tqdm(exp_dict.items(), desc="Processing exposure files",
                         dynamic_ncols=True)
 
-        # Create empty list of temporary HDF5-files
-        temp_files = []
-
         # Open master file
-        with h5py.File(args.master_file, 'r+') as m_file:
+        with h5py.File(ARGS.master_file, 'r+') as m_file:
             # Process all exposure files
             try:
                 for expnum, exp_files in exp_iter:
@@ -315,7 +386,7 @@ def update(args):
 
                     # Process this exposure
                     temp_files.append(
-                        process_exp_files(m_file, expnum, exp_files, args))
+                        process_exp_files(m_file, expnum, exp_files))
 
             # If a KeyboardInterrupt is raised, update database with progress
             except KeyboardInterrupt:
@@ -326,18 +397,17 @@ def update(args):
             n_expnums_known = m_file.attrs['n_expnums']
 
         # Update database
-        print("Updating database with processed exposures.")
+        print("Updating database with processed exposures (NOTE: This may take"
+              " a while for large databases.).")
 
-        # Open all temporary exposure HDF5-files
-        temp_df = vaex.open_many(temp_files)
+        # Divide temp_files up into lists of length 100
+        temp_files = [temp_files[i:i+100]
+                      for i in range(0, len(temp_files), 100)]
 
-        # If the master exposure file already exists, open it
-        if path.exists(args.master_exp_file):
-            # Add master_exp_file to temp_files
-            temp_files.insert(0, args.master_exp_file)
-
+        # If the master exposure file exists and there are outdated exposures
+        if path.exists(ARGS.master_exp_file) and expnums_outdated:
             # Open the master exposure file
-            master_df = vaex.open(args.master_exp_file)
+            master_df = vaex.open(ARGS.master_exp_file)
 
             # Solely select the exposures that were not outdated
             for expnum in expnums_outdated:
@@ -346,34 +416,57 @@ def update(args):
             # Extract the master DataFrame
             master_df = master_df.extract()
 
-            # Concatenate the two DataFrames
-            master_df = master_df.concat(temp_df)
+            # Export to HDF5
+            master_temp_file = path.join(ARGS.mld, 'temp.hdf5')
+            master_df.export_hdf5(master_temp_file)
 
-        # If not, master_df is equal to temp_df
-        else:
-            master_df = temp_df
+            # Close master file
+            master_df.close()
 
-        # Export to HDF5
-        master_temp_file = path.join(args.mld, 'temp.hdf5')
-        master_df.export_hdf5(master_temp_file)
+            # Remove original master file
+            os.remove(ARGS.master_exp_file)
+
+            # Rename master_temp_file to master exposure file name
+            os.rename(master_temp_file, ARGS.master_exp_file)
+
+        # Loop over all temporary exposure HDF5-files
+        # TODO: Figure out how to avoid copying over all the data every time
+        for temp_files_list in temp_files:
+            # Open all temporary exposure HDF5-files in this list
+            temp_df = vaex.open_many(temp_files_list)
+
+            # Add to master_df if it exists
+            if path.exists(ARGS.master_exp_file):
+                # Open the master exposure file
+                master_df = vaex.open(ARGS.master_exp_file)
+                master_df = master_df.concat(temp_df)
+                temp_files_list.append(ARGS.master_exp_file)
+            else:
+                master_df = temp_df
+
+            # Export to HDF5
+            master_temp_file = path.join(ARGS.mld, 'temp.hdf5')
+            master_df.export_hdf5(master_temp_file)
+
+            # Close all temporary HDF5-files
+            master_df.close_files()
+
+            # Remove all temporary files
+            for temp_file in temp_files_list:
+                os.remove(temp_file)
+
+            # Rename master_temp_file to master exposure file name
+            os.rename(master_temp_file, ARGS.master_exp_file)
 
         # Determine all objids that are known
         print("Determining all objects in the database.")
+        master_df = vaex.open(ARGS.master_exp_file)
         objids, counts = np.unique(master_df['objid'].values,
                                    return_counts=True)
-
-        # Close all temporary HDF5-files
-        master_df.close_files()
-
-        # Remove all temporary files
-        for temp_file in temp_files:
-            os.remove(temp_file)
-
-        # Rename master_temp_file to master exposure file name
-        os.rename(master_temp_file, args.master_exp_file)
+        master_df.close()
 
         # Open master file
-        with h5py.File(args.master_file, 'r+') as m_file:
+        with h5py.File(ARGS.master_file, 'r+') as m_file:
             # Obtain previously known objids
             n_objids_known = m_file.attrs.setdefault('n_objids', 0)
             objids_dset = m_file.require_dataset('objids',
@@ -403,7 +496,7 @@ def update(args):
 
 # %% FUNCTION DEFINITIONS
 # This function processes an exposure file
-def process_exp_files(m_file, expnum, exp_files, args):
+def process_exp_files(m_file, expnum, exp_files):
     # Unpack exp_files
     exp_file, xtr_file = exp_files
 
@@ -427,7 +520,7 @@ def process_exp_files(m_file, expnum, exp_files, args):
         sys.exit()
 
     # Export vaex DataFrame to HDF5
-    exp_file_hdf5 = path.join(args.mld, f'exp{expnum}.hdf5')
+    exp_file_hdf5 = path.join(ARGS.mld, TEMP_EXP_FILE.format(expnum))
     exp_data.export_hdf5(exp_file_hdf5)
 
     # Check if this exposure has been processed before
@@ -447,15 +540,10 @@ def process_exp_files(m_file, expnum, exp_files, args):
     return(exp_file_hdf5)
 
 
-# This function processes the inputs given by the user in the query session
-def process_query_inputs(inputs, args):
-    pass
-
-
 # This function checks if the database exists and proceeds accordingly
-def check_database_exist(req, args):
+def check_database_exist(req):
     # Check if the database exists
-    exists = path.exists(args.mld)
+    exists = path.exists(ARGS.mld)
 
     # If exists and req are equal, return
     if req is exists:
@@ -465,14 +553,25 @@ def check_database_exist(req, args):
     else:
         # If database exists
         if exists:
-            print(f"ERROR: Provided DIR {args.dir!r} already contains a "
+            print(f"ERROR: Provided DIR {ARGS.dir!r} already contains a "
                   f"micro-lensing database!")
             sys.exit()
         # If database does not exist
         else:
-            print(f"ERROR: Provided DIR {args.dir!r} does not contain a "
+            print(f"ERROR: Provided DIR {ARGS.dir!r} does not contain a "
                   f"micro-lensing database!")
             sys.exit()
+
+
+# %% QUERY FUNCTIONS
+# This function processes the inputs given by the user in the query session
+def process_query_inputs(inputs):
+    raise ValueError("LOL, w00t?")
+
+
+# This function handles the 'help' query
+def query_help(inputs):
+    pass
 
 
 # %% MAIN FUNCTION
@@ -520,7 +619,19 @@ def main():
         add_help=True)
 
     # Set defaults for init_parser
-    init_parser.set_defaults(func=init)
+    init_parser.set_defaults(func=cli_init)
+
+    # IPYTHON COMMAND
+    # Add IPython subparser
+    ipython_parser = subparsers.add_parser(
+        'ipython',
+        description=("Use an embedded IPython console to interact with an "
+                     "existing micro-lensing database in DIR"),
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        add_help=True)
+
+    # Set defaults for ipython_parser
+    ipython_parser.set_defaults(func=cli_ipython)
 
     # QUERY COMMAND
     # Add query subparser
@@ -531,7 +642,7 @@ def main():
         add_help=True)
 
     # Set defaults for query_parser
-    query_parser.set_defaults(func=query)
+    query_parser.set_defaults(func=cli_query)
 
     # RESET COMMAND
     # Add reset subparser
@@ -543,7 +654,7 @@ def main():
         add_help=True)
 
     # Set defaults for reset_parser
-    reset_parser.set_defaults(func=reset)
+    reset_parser.set_defaults(func=cli_reset)
 
     # SEARCH COMMAND
     # Add search subparser
@@ -554,7 +665,7 @@ def main():
         add_help=True)
 
     # Set defaults for search_parser
-    search_parser.set_defaults(func=query)
+    search_parser.set_defaults(func=cli_query)
 
     # STATUS COMMAND
     # Add status subparser
@@ -565,7 +676,7 @@ def main():
         add_help=True)
 
     # Set defaults for status_parser
-    status_parser.set_defaults(func=status)
+    status_parser.set_defaults(func=cli_status)
 
     # UPDATE COMMAND
     # Add update subparser
@@ -576,31 +687,32 @@ def main():
         add_help=True)
 
     # Set defaults for update_parser
-    update_parser.set_defaults(func=update)
+    update_parser.set_defaults(func=cli_update)
 
     # Parse the arguments
-    args = parser.parse_args()
+    global ARGS
+    ARGS = parser.parse_args()
 
     # Make sure provided dir is an absolute path
-    args.dir = path.abspath(args.dir)
+    ARGS.dir = path.abspath(ARGS.dir)
 
     # Check if provided dir exists
-    if not path.exists(args.dir):
+    if not path.exists(ARGS.dir):
         # If not, raise error and exit
-        print(f"ERROR: Provided DIR {args.dir!r} does not exist!")
+        print(f"ERROR: Provided DIR {ARGS.dir!r} does not exist!")
         sys.exit()
 
     # Obtain absolute path to database
-    args.mld = path.join(args.dir, MLD_NAME)
-    args.master_file = path.join(args.mld, MASTER_FILE)
-    args.master_exp_file = path.join(args.mld, MASTER_EXP_FILE)
+    ARGS.mld = path.join(ARGS.dir, MLD_NAME)
+    ARGS.master_file = path.join(ARGS.mld, MASTER_FILE)
+    ARGS.master_exp_file = path.join(ARGS.mld, MASTER_EXP_FILE)
 
     # If arguments is empty (no func was provided), show help
-    if 'func' not in args:
+    if 'func' not in ARGS:
         parser.print_help()
     # Else, call the corresponding function
     else:
-        args.func(args)
+        ARGS.func()
 
 
 # %% MAIN EXECUTION

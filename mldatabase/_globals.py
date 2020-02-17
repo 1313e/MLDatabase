@@ -14,7 +14,7 @@ from os import path
 # All declaration
 __all__ = ['DIR_PATH', 'EXIT_KEYWORDS', 'EXP_HEADER', 'EXP_REGEX',
            'MASTER_EXP_FILE', 'MASTER_FILE', 'MLD_NAME', 'PKG_NAME',
-           'REQ_FILES', 'SIZE_SUFFIXES', 'XTR_HEADER']
+           'REQ_FILES', 'SIZE_SUFFIXES', 'TEMP_EXP_FILE', 'XTR_HEADER']
 
 
 # %% PACKAGE GLOBALS
@@ -57,6 +57,7 @@ SIZE_SUFFIXES = ['bytes',                           # File size suffixes
                  'EiB',
                  'ZiB',
                  'YiB']
+TEMP_EXP_FILE = 'exp{}.hdf5'                        # Name of temp exp file
 XTR_HEADER = {                                      # Header of xtr/epochs file
     'expnum': int,
     'hjd': float,
