@@ -93,7 +93,7 @@ class HelpFormatterWithSubCommands(argparse.ArgumentDefaultsHelpFormatter):
 # This function handles the 'init' subcommand
 def cli_init():
     # Check if a database already exists in this folder
-    check_database_exist(False, ARGS)
+    check_database_exist(False)
 
     # Check if these files are present
     for req_file in REQ_FILES:
@@ -312,8 +312,8 @@ def cli_update():
         expnums_known = expnums_dset[:]
 
     # Obtain sorted string of all files available
-#    filenames = str(sorted(next(os.walk(ARGS.dir))[2]))
-    filenames = str(sorted(next(os.walk(ARGS.dir))[2])[:10])   # Only select the first 10 files found
+    filenames = str(sorted(next(os.walk(ARGS.dir))[2]))
+#    filenames = str(sorted(next(os.walk(ARGS.dir))[2])[:10])   # Only select the first 10 files found
 
     # Create a regex iterator
     re_iter = re.finditer(EXP_REGEX, filenames)
