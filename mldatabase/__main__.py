@@ -264,7 +264,7 @@ def cli_status():
             # Extract both values
             key, value = stat
 
-            # Print proper
+            # Print value with proper formatting
             if isinstance(value, (int, float, np.integer, np.floating)):
                 str_list.append(f"{key: <{width}}\t{value:,}")
             else:
@@ -395,9 +395,8 @@ def cli_update():
         print("Updating database with processed exposures (NOTE: This may take"
               " a while for large databases.).")
 
-        # Divide temp_files up into lists of length 100
-        temp_files = [temp_files[i:i+100]
-                      for i in range(0, len(temp_files), 100)]
+        # Divide temp_files up into lists of length 100 with last of length 150
+        temp_files = [temp_files[slc] for slc in dyn_range(len(temp_files))]
 
         # If the master exposure file exists and there are outdated exposures
         if path.exists(ARGS.master_exp_file) and expnums_outdated:
@@ -556,6 +555,45 @@ def check_database_exist(req):
             print(f"ERROR: Provided DIR {ARGS.dir!r} does not contain a "
                   f"micro-lensing database!")
             sys.exit()
+
+
+# This function creates a generator that returns dynamically sized slices
+def dyn_range(n, step=100):
+    """
+    Generator that returns slices of range `step` for indexing an object of
+    length `n`. The last slice has a range of up to `step*1.5`.
+
+    Parameters
+    ----------
+    n : int
+        The length of the object the slices will be used for.
+
+    Optional
+    --------
+    step : int. Default: 100
+        The step size of each slice.
+
+    """
+
+    # Calculate step_max
+    step_max = int(step*1.5)
+
+    # Initialize upper limit
+    b = 0
+
+    # Keep generating new slices until n has been reached
+    while(b < n):
+        # Set lower limit to previous upper limit
+        a = b
+
+        # Increase upper limit by step except if less than step_max remain
+        b += step_max if(n-b <= step_max) else step
+
+        # Make sure upper limit is not higher than n
+        b = min(b, n)
+
+        # Return the next slice
+        yield(slice(a, b))
 
 
 # %% QUERY FUNCTIONS
