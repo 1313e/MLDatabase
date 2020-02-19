@@ -4,6 +4,7 @@
 # TODO: Use 'argcomplete'?
 # Built-in imports
 import argparse
+from contextlib import closing
 from itertools import islice
 import os
 from os import path
@@ -25,21 +26,21 @@ from prompt_toolkit.history import FileHistory
 from prompt_toolkit.validation import DummyValidator
 from sortedcontainers import SortedDict as sdict
 from tqdm import tqdm
-import vaex
 
 # MLDatabase imports
-from mldatabase import (
-    __version__, EXIT_KEYWORDS, EXP_HEADER, EXP_REGEX, MASTER_EXP_FILE,
-    MASTER_FILE, MLD_NAME, PKG_NAME, REQ_FILES, SIZE_SUFFIXES, TEMP_EXP_FILE,
-    XTR_HEADER)
+from mldatabase import __version__
+from mldatabase._globals import (
+    EXIT_KEYWORDS, EXP_HEADER, EXP_REGEX, MASTER_EXP_FILE, MASTER_FILE,
+    MLD_NAME, PKG_NAME, REQ_FILES, SIZE_SUFFIXES, TEMP_EXP_FILE, XTR_HEADER)
 
 # All declaration
-__all__ = ['main']
+__all__ = ['open_database']
 
 
 # %% GLOBALS
-# Define global arguments that holds all arguments given to parser
-global ARGS
+# Define main description of this package
+main_desc = (f"{PKG_NAME}; a Python CLI package for making micro-lensing "
+             f"databases from DECam exposures.")
 
 # Define list of all query keywords
 QUERY_KEYWORDS = []
@@ -117,39 +118,26 @@ def cli_init():
 
 # This function handles the 'ipython' subcommand
 def cli_ipython():
-    # Check if a database already exists in this folder
-    check_database_exist(True)
-
-    # Load the database
-    df = vaex.open(ARGS.master_exp_file)
-
-    # Embed an IPython console
-    IPython.embed(
-        banner1=("Starting IPython session. Database is available as 'df', a "
-                 "vaex DataFrame.\n"
-                 "See https://vaex.readthedocs.io/en/latest/tutorial.html "
-                 "for how to interact with vaex DataFrames.\n"),
-        exit_msg="Leaving IPython session. Database will be closed.",
-        colors='Neutral',
-        user_ns={'df': df})
-
-    # Close DataFrame after IPython session has ended
-    df.close_files()
+    # Open the database
+    with open_database() as df:
+        # Embed an IPython console
+        IPython.embed(
+            banner1=("Starting IPython session. Database is available as 'df',"
+                     " a vaex DataFrame.\n"
+                     "See https://vaex.readthedocs.io/en/latest/tutorial.html "
+                     "for how to interact with vaex DataFrames.\n"),
+            exit_msg="Leaving IPython session. Database will be closed.",
+            colors='Neutral',
+            user_ns={'df': df})
 
 
 # This function handles the 'query' subcommand
 def cli_query():
-    # Check if a database already exists in this folder
-    check_database_exist(True)
+    # Open database
+    with open_database() as df:
+        # Add df to ARGS
+        ARGS.df = df
 
-    # Load the database
-    df = vaex.open(ARGS.master_exp_file)
-
-    # Add df to ARGS
-    ARGS.df = df
-
-    # Wrap in try-statement to ensure DataFrame is closed afterward
-    try:
         # Create list of valid keywords
         keywords = [*EXIT_KEYWORDS, *QUERY_KEYWORDS]
 
@@ -189,10 +177,6 @@ def cli_query():
             # If an exception is raised, simply print the entire traceback
             except Exception:
                 print_exc()
-
-    # Close DataFrame after query session has ended
-    finally:
-        df.close_files()
 
 
 # This function handles the 'reset' subcommand
@@ -367,6 +351,9 @@ def cli_update():
 
     # If exp_dict or temp_files contains at least 1 item
     if exp_dict or temp_files:
+        # Import vaex
+        import vaex
+
         # Create tqdm iterator for processing
         exp_iter = tqdm(exp_dict.items(), desc="Processing exposure files",
                         dynamic_ncols=True)
@@ -401,21 +388,18 @@ def cli_update():
         # If the master exposure file exists and there are outdated exposures
         if path.exists(ARGS.master_exp_file) and expnums_outdated:
             # Open the master exposure file
-            master_df = vaex.open(ARGS.master_exp_file)
+            with open_database() as master_df:
+                # Solely select the exposures that were not outdated
+                for expnum in expnums_outdated:
+                    master_df = master_df.filter(master_df.expnum != expnum,
+                                                 'and')
 
-            # Solely select the exposures that were not outdated
-            for expnum in expnums_outdated:
-                master_df = master_df.filter(master_df.expnum != expnum, 'and')
+                # Extract the master DataFrame
+                master_df = master_df.extract()
 
-            # Extract the master DataFrame
-            master_df = master_df.extract()
-
-            # Export to HDF5
-            master_temp_file = path.join(ARGS.mld, 'temp.hdf5')
-            master_df.export_hdf5(master_temp_file)
-
-            # Close master file
-            master_df.close()
+                # Export to HDF5
+                master_temp_file = path.join(ARGS.mld, 'temp.hdf5')
+                master_df.export_hdf5(master_temp_file)
 
             # Remove original master file
             os.remove(ARGS.master_exp_file)
@@ -426,24 +410,27 @@ def cli_update():
         # Loop over all temporary exposure HDF5-files
         # TODO: Figure out how to avoid copying over all the data every time
         for temp_files_list in temp_files:
-            # Open all temporary exposure HDF5-files in this list
-            temp_df = vaex.open_many(temp_files_list)
+            # Wrap in try-statement to ensure files are closed
+            try:
+                # Open all temporary exposure HDF5-files in this list
+                temp_df = vaex.open_many(temp_files_list)
 
-            # Add to master_df if it exists
-            if path.exists(ARGS.master_exp_file):
-                # Open the master exposure file
-                master_df = vaex.open(ARGS.master_exp_file)
-                master_df = master_df.concat(temp_df)
-                temp_files_list.append(ARGS.master_exp_file)
-            else:
-                master_df = temp_df
+                # Add to master_df if it exists
+                if path.exists(ARGS.master_exp_file):
+                    # Open the master exposure file
+                    master_df = vaex.open(ARGS.master_exp_file)
+                    master_df = master_df.concat(temp_df)
+                    temp_files_list.append(ARGS.master_exp_file)
+                else:
+                    master_df = temp_df
 
-            # Export to HDF5
-            master_temp_file = path.join(ARGS.mld, 'temp.hdf5')
-            master_df.export_hdf5(master_temp_file)
+                # Export to HDF5
+                master_temp_file = path.join(ARGS.mld, 'temp.hdf5')
+                master_df.export_hdf5(master_temp_file)
 
             # Close all temporary HDF5-files
-            master_df.close_files()
+            finally:
+                master_df.close_files()
 
             # Remove all temporary files
             for temp_file in temp_files_list:
@@ -454,10 +441,9 @@ def cli_update():
 
         # Determine all objids that are known
         print("Determining all objects in the database.")
-        master_df = vaex.open(ARGS.master_exp_file)
-        objids, counts = np.unique(master_df['objid'].values,
-                                   return_counts=True)
-        master_df.close()
+        with open_database() as master_df:
+            objids, counts = np.unique(master_df['objid'].values,
+                                       return_counts=True)
 
         # Open master file
         with h5py.File(ARGS.master_file, 'r+') as m_file:
@@ -489,8 +475,69 @@ def cli_update():
 
 
 # %% FUNCTION DEFINITIONS
+# This function returns a context manager used for opening and closing database
+def open_database(mld_dir=None):
+    """
+    Context manager for accessing an existing micro-lensing database in the
+    provided `mld_dir` as a :obj:`~vaex.dataframe.DataFrame` object.
+
+    See https://vaex.readthedocs.io/en/latest/tutorial.html for how to interact
+    with vaex DataFrames.
+
+    Optional
+    --------
+    mld_dir : str or None. Default: None
+        The relative or absolute path to the directory that contains an
+        existing micro-lensing database.
+        If *None*, the current working directory is used.
+        This argument is equivalent to the optional `-d`/`--dir` argument when
+        using the command-line interface.
+
+    Yields
+    ------
+    df : :obj:`~vaex.dataframe.DataFrame` object
+        The vaex DataFrame that contains all of the data stored in the database
+        in `mld_dir`.
+
+    """
+
+    # Check if ARGS is available
+    try:
+        mld = ARGS.mld
+
+    # If it is not, obtain the mld directory manually
+    except NameError:
+        # Determine directory with database files
+        mld = path.join(path.abspath(mld_dir if mld_dir else '.'), MLD_NAME)
+
+        # Check if it exists
+        if not path.exists(mld):
+            # If not, raise error
+            raise OSError("Input argument 'mld_dir' does not contain a "
+                          "micro-lensing database!")
+
+    # If it is, check if it exists
+    else:
+        check_database_exist(True)
+
+    # Obtain the path to the master exposure file
+    master_exp_file = path.join(mld, MASTER_EXP_FILE)
+
+    # Import vaex
+    import vaex
+
+    # Open the database
+    df = vaex.open(master_exp_file)
+
+    # Return it as a context manager
+    return(closing(df))
+
+
 # This function processes an exposure file
 def process_exp_files(m_file, expnum, exp_files):
+    # Import vaex
+    import vaex
+
     # Unpack exp_files
     exp_file, xtr_file = exp_files
 
@@ -621,7 +668,7 @@ def main():
     # Initialize argparser
     parser = argparse.ArgumentParser(
         'mld',
-        description=PKG_NAME,
+        description=main_desc,
         formatter_class=HelpFormatterWithSubCommands,
         add_help=True,
         allow_abbrev=True)
@@ -648,7 +695,7 @@ def main():
         type=str,
         dest='dir')
 
-    # Create a parent parser for 'init' and 'update' commands
+    # Create a parent parser for 'init', 'reset' and 'update' commands
     parent_parser = argparse.ArgumentParser(add_help=False)
 
     # Add optional 'nexpnums' argument
@@ -701,6 +748,7 @@ def main():
     # Add reset subparser
     reset_parser = subparsers.add_parser(
         'reset',
+        parents=[parent_parser],
         description=("Delete and reinitialize an existing micro-lensing "
                      "database in DIR"),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
