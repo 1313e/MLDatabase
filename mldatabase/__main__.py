@@ -4,12 +4,12 @@
 # TODO: Use 'argcomplete'?
 # Built-in imports
 import argparse
+from itertools import islice
 import os
 from os import path
 import re
 import shutil
 import sys
-from textwrap import dedent
 import time
 from traceback import print_exc
 
@@ -23,6 +23,7 @@ from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import WordCompleter
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.validation import DummyValidator
+from sortedcontainers import SortedDict as sdict
 from tqdm import tqdm
 import vaex
 
@@ -53,8 +54,11 @@ class HelpFormatterWithSubCommands(argparse.ArgumentDefaultsHelpFormatter):
         if action.help is not argparse.SUPPRESS:
             # Check if this action is a subparser's action
             if isinstance(action, argparse._SubParsersAction):
+                # Convert action.choices to a sorted dictionary
+                choices = sdict(action.choices)
+
                 # If so, loop over all subcommands defined in the action
-                for name, subparser in action.choices.items():
+                for name, subparser in choices.items():
                     # Format the description of this subcommand and add it
                     self._add_item(self.format_subcommands,
                                    [name, subparser.description])
@@ -313,15 +317,14 @@ def cli_update():
 
     # Obtain sorted string of all files available
     filenames = str(sorted(next(os.walk(ARGS.dir))[2]))
-#    filenames = str(sorted(next(os.walk(ARGS.dir))[2])[:10])   # Only select the first 10 files found
 
     # Create a regex iterator
     re_iter = re.finditer(EXP_REGEX, filenames)
 
-    # Create dict with all exposure files
+    # Create dict with up to ARGS.n_expnums exposure files
     exp_dict = {int(m['expnum']): (path.join(ARGS.dir, m['exp_file']),
                                    path.join(ARGS.dir, m['xtr_file']))
-                for m in re_iter}
+                for m in islice(re_iter, ARGS.n_expnums)}
 
     # Add the required flat exposure files (REGEX above explicitly ignores it)
 #    exp_dict[0] = (path.join(ARGS.dir, REQ_FILES[0]),
@@ -558,7 +561,7 @@ def check_database_exist(req):
 # %% QUERY FUNCTIONS
 # This function processes the inputs given by the user in the query session
 def process_query_inputs(inputs):
-    raise ValueError("LOL, w00t?")
+    raise ValueError("The query system has not been implemented yet!")
 
 
 # This function handles the 'help' query
@@ -591,13 +594,13 @@ def main():
         metavar='COMMAND')
 
     # OPTIONAL ARGUMENTS
-    # Add version argument
+    # Add 'version' argument
     parser.add_argument(
         '-v', '--version',
         action='version',
         version=f"{PKG_NAME} v{__version__}")
 
-    # Add dir argument
+    # Add 'dir' argument
     parser.add_argument(
         '-d', '--dir',
         help="Micro-lensing database directory to use",
@@ -607,10 +610,24 @@ def main():
         type=str,
         dest='dir')
 
+    # Create a parent parser for 'init' and 'update' commands
+    parent_parser = argparse.ArgumentParser(add_help=False)
+
+    # Add optional 'nexpnums' argument
+    parent_parser.add_argument(
+        '-n', '--n_expnums',
+        help="Number of exposures to use",
+        metavar='N',
+        action='store',
+        default=None,
+        type=int,
+        dest='n_expnums')
+
     # INIT COMMAND
     # Add init subparser
     init_parser = subparsers.add_parser(
         'init',
+        parents=[parent_parser],
         description="Initialize a new micro-lensing database in DIR",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         add_help=True)
@@ -634,6 +651,7 @@ def main():
     # Add query subparser
     query_parser = subparsers.add_parser(
         'query',
+        aliases=['search'],
         description="Query an existing micro-lensing database in DIR",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         add_help=True)
@@ -653,17 +671,6 @@ def main():
     # Set defaults for reset_parser
     reset_parser.set_defaults(func=cli_reset)
 
-    # SEARCH COMMAND
-    # Add search subparser
-    search_parser = subparsers.add_parser(
-        'search',
-        description="Alias for 'query'",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-        add_help=True)
-
-    # Set defaults for search_parser
-    search_parser.set_defaults(func=cli_query)
-
     # STATUS COMMAND
     # Add status subparser
     status_parser = subparsers.add_parser(
@@ -679,6 +686,7 @@ def main():
     # Add update subparser
     update_parser = subparsers.add_parser(
         'update',
+        parents=[parent_parser],
         description="Update an existing micro-lensing database in DIR",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         add_help=True)
