@@ -40,8 +40,8 @@ __all__ = ['main']
 # Define global arguments that holds all arguments given to parser
 global ARGS
 
-# Define the main help docstring
-main_description = dedent("")
+# Define list of all query keywords
+QUERY_KEYWORDS = []
 
 
 # %% CLASS DEFINITIONS
@@ -116,14 +116,8 @@ def cli_ipython():
     # Check if a database already exists in this folder
     check_database_exist(True)
 
-    # Use global ARGS
-    global ARGS
-
     # Load the database
     df = vaex.open(ARGS.master_exp_file)
-
-    # Add df to ARGS
-    ARGS.df = df
 
     # Embed an IPython console
     IPython.embed(
@@ -132,7 +126,8 @@ def cli_ipython():
                  "See https://vaex.readthedocs.io/en/latest/tutorial.html "
                  "for how to interact with vaex DataFrames.\n"),
         exit_msg="Leaving IPython session. Database will be closed.",
-        colors='Neutral')
+        colors='Neutral',
+        user_ns={'df': df})
 
     # Close DataFrame after IPython session has ended
     df.close_files()
@@ -143,9 +138,6 @@ def cli_query():
     # Check if a database already exists in this folder
     check_database_exist(True)
 
-    # Use global ARGS
-    global ARGS
-
     # Load the database
     df = vaex.open(ARGS.master_exp_file)
 
@@ -155,7 +147,7 @@ def cli_query():
     # Wrap in try-statement to ensure DataFrame is closed afterward
     try:
         # Create list of valid keywords
-        keywords = [*EXIT_KEYWORDS, 'help']
+        keywords = [*EXIT_KEYWORDS, *QUERY_KEYWORDS]
 
         # Initialize CLI objects
         # TODO: Write auto-suggest only matching against allowed words
@@ -574,6 +566,11 @@ def query_help(inputs):
     pass
 
 
+# This function handles the 'param' query
+def query_param(inputs):
+    pass
+
+
 # %% MAIN FUNCTION
 def main():
     """
@@ -625,7 +622,7 @@ def main():
     # Add IPython subparser
     ipython_parser = subparsers.add_parser(
         'ipython',
-        description=("Use an embedded IPython console to interact with an "
+        description=("Start an embedded IPython console to interact with an "
                      "existing micro-lensing database in DIR"),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         add_help=True)
