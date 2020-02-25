@@ -185,6 +185,16 @@ def cli_reset():
     # Check if a database already exists in this folder
     check_database_exist(True)
 
+    # Determine all files in the database directory as a string
+    mld_files_str = str(next(os.walk(ARGS.mld))[2])
+
+    # If the database exists, make sure currently no lock files exist
+    if '.lock' in mld_files_str:
+        # If a lock-file already exists, raise error and exit
+        print(f"ERROR: Database in provided DIR {ARGS.dir!r} is currently "
+              f"being used! Reset is not possible!")
+        sys.exit()
+
     # Delete the entire database
     shutil.rmtree(ARGS.mld)
 
