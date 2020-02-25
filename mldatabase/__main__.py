@@ -4,13 +4,14 @@
 # TODO: Use 'argcomplete'?
 # Built-in imports
 import argparse
-from contextlib import closing
+from contextlib import contextmanager
 from itertools import islice
 import os
 from os import path
 import re
 import shutil
 import sys
+from tempfile import mkstemp
 import time
 from traceback import print_exc
 
@@ -268,11 +269,138 @@ def cli_status():
 def cli_update():
     # Check if a database already exists in this folder
     check_database_exist(True)
+
+    # Determine path to update-lock file
+    lock_file = path.join(ARGS.mld, '.mld_update.lock')
+
+    # Determine all files in the database directory as a string
+    mld_files_str = str(next(os.walk(ARGS.mld))[2])
+
+    # If the database exists, make sure currently no lock files exist
+    if '.lock' in mld_files_str:
+        # If a lock-file already exists, raise proper error
+        if path.basename(lock_file) in mld_files_str:
+            print(f"ERROR: Database in provided DIR {ARGS.dir!r} is currently "
+                  f"already being updated by a different process! Update is "
+                  f"not possible!")
+        else:
+            print(f"ERROR: Database in provided DIR {ARGS.dir!r} is currently "
+                  f"being accessed! Update is not possible!")
+
+        # Exit CLI
+        sys.exit()
+
+    # Create the lock-file
+    with open(lock_file, 'w'):
+        pass
+
+    # Wrap in try-statement to ensure lock-file is removed afterward
+    try:
+        # Perform the update
+        perform_update()
+
+    # Remove lock-file
+    finally:
+        os.remove(lock_file)
+
+
+# %% FUNCTION DEFINITIONS
+# This function returns a context manager used for opening and closing database
+@contextmanager
+def open_database(mld_dir=None):
+    """
+    Context manager for accessing an existing micro-lensing database in the
+    provided `mld_dir` as a :obj:`~vaex.dataframe.DataFrame` object.
+
+    See https://vaex.readthedocs.io/en/latest/tutorial.html for how to interact
+    with vaex DataFrames.
+
+    Optional
+    --------
+    mld_dir : str or None. Default: None
+        The relative or absolute path to the directory that contains an
+        existing micro-lensing database.
+        If *None*, the current working directory is used.
+        This argument is equivalent to the optional `-d`/`--dir` argument when
+        using the command-line interface.
+
+    Yields
+    ------
+    df : :obj:`~vaex.dataframe.DataFrame` object
+        The vaex DataFrame that contains all of the data stored in the database
+        in `mld_dir`.
+
+    """
+
+    # Check if ARGS is available
+    try:
+        mld = ARGS.mld
+
+    # If it is not, obtain the mld directory manually
+    except NameError:
+        # Determine directory with database files
+        mld = path.join(path.abspath(mld_dir if mld_dir else '.'), MLD_NAME)
+
+        # Check if it exists
+        if not path.exists(mld):
+            # If not, raise error
+            raise OSError("Input argument 'mld_dir' does not contain a "
+                          "micro-lensing database!")
+
+        # If it does exist, make sure that the update-lock file does not exist
+        if path.exists(path.join(mld, '.mld_update.lock')):
+            # If the update-lock file does exist, raise error
+            raise OSError(f"Database in input argument 'mld_dir' ({mld_dir!r})"
+                          f" is currently being updated! Access is not "
+                          f"possible!")
+
+    # If it is, check if the database exists
+    else:
+        # Check that database file exists
+        check_database_exist(True)
+
+        # If so, make sure that the update-lock file does not exist
+        if path.exists(path.join(mld, '.mld_update.lock')):
+            # If the update-lock file does exist, raise error and exit
+            print(f"ERROR: Database in provided DIR {ARGS.dir!r} is currently "
+                  f"being updated! Access is not possible!")
+            sys.exit()
+
+    # Obtain the path to the master exposure file
+    master_exp_file = path.join(mld, MASTER_EXP_FILE)
+
+    # Import vaex
+    import vaex
+
+    # Open the database
+    df = vaex.open(master_exp_file)
+
+    # Wrap within try-finally statement
+    try:
+        # Create a lock-file stating that the database is open for access
+        fd, filename = mkstemp('.lock', '.mld_access_', mld)
+        os.close(fd)
+
+        # Yield the database
+        yield df
+
+    # After context manager returns, clean up
+    finally:
+        # Close database
+        df.close()
+
+        # Remove the lock-file
+        os.remove(filename)
+
+
+# This function performs the update process
+def perform_update():
+    # Print that database is being updated
     print(f"Updating micro-lensing database in {ARGS.dir!r}.")
 
 #    # Obtain path to reference exposure file
 #    ref_exp_file = path.join(ARGS.dir, 'Exp0.csv')
-
+#
 #    # Read in the first column of this file (which should be all objids)
 #    objids = pd.read_csv(ref_exp_file, skipinitialspace=True, header=None,
 #                         names=EXP_HEADER, usecols=['objid'], squeeze=True,
@@ -387,8 +515,11 @@ def cli_update():
 
         # If the master exposure file exists and there are outdated exposures
         if path.exists(ARGS.master_exp_file) and expnums_outdated:
-            # Open the master exposure file
-            with open_database() as master_df:
+            # Wrap in try-statement to ensure file is closed
+            try:
+                # Open the master exposure file
+                master_df = vaex.open(ARGS.master_exp_file)
+
                 # Solely select the exposures that were not outdated
                 for expnum in expnums_outdated:
                     master_df = master_df.filter(master_df.expnum != expnum,
@@ -400,6 +531,10 @@ def cli_update():
                 # Export to HDF5
                 master_temp_file = path.join(ARGS.mld, 'temp.hdf5')
                 master_df.export_hdf5(master_temp_file)
+
+            # Close master exposure file
+            finally:
+                master_df.close()
 
             # Remove original master file
             os.remove(ARGS.master_exp_file)
@@ -441,9 +576,12 @@ def cli_update():
 
         # Determine all objids that are known
         print("Determining all objects in the database.")
-        with open_database() as master_df:
+        try:
+            master_df = vaex.open(ARGS.master_exp_file)
             objids, counts = np.unique(master_df['objid'].values,
                                        return_counts=True)
+        finally:
+            master_df.close()
 
         # Open master file
         with h5py.File(ARGS.master_file, 'r+') as m_file:
@@ -472,65 +610,6 @@ def cli_update():
     # If no new exposure files are found, database is already up-to-date
     else:
         print("Database is already up-to-date.")
-
-
-# %% FUNCTION DEFINITIONS
-# This function returns a context manager used for opening and closing database
-def open_database(mld_dir=None):
-    """
-    Context manager for accessing an existing micro-lensing database in the
-    provided `mld_dir` as a :obj:`~vaex.dataframe.DataFrame` object.
-
-    See https://vaex.readthedocs.io/en/latest/tutorial.html for how to interact
-    with vaex DataFrames.
-
-    Optional
-    --------
-    mld_dir : str or None. Default: None
-        The relative or absolute path to the directory that contains an
-        existing micro-lensing database.
-        If *None*, the current working directory is used.
-        This argument is equivalent to the optional `-d`/`--dir` argument when
-        using the command-line interface.
-
-    Yields
-    ------
-    df : :obj:`~vaex.dataframe.DataFrame` object
-        The vaex DataFrame that contains all of the data stored in the database
-        in `mld_dir`.
-
-    """
-
-    # Check if ARGS is available
-    try:
-        mld = ARGS.mld
-
-    # If it is not, obtain the mld directory manually
-    except NameError:
-        # Determine directory with database files
-        mld = path.join(path.abspath(mld_dir if mld_dir else '.'), MLD_NAME)
-
-        # Check if it exists
-        if not path.exists(mld):
-            # If not, raise error
-            raise OSError("Input argument 'mld_dir' does not contain a "
-                          "micro-lensing database!")
-
-    # If it is, check if it exists
-    else:
-        check_database_exist(True)
-
-    # Obtain the path to the master exposure file
-    master_exp_file = path.join(mld, MASTER_EXP_FILE)
-
-    # Import vaex
-    import vaex
-
-    # Open the database
-    df = vaex.open(master_exp_file)
-
-    # Return it as a context manager
-    return(closing(df))
 
 
 # This function processes an exposure file
@@ -646,7 +725,8 @@ def dyn_range(n, step=100):
 # %% QUERY FUNCTIONS
 # This function processes the inputs given by the user in the query session
 def process_query_inputs(inputs):
-    raise ValueError("The query system has not been implemented yet!")
+    raise ValueError("The query system has not been implemented yet! Use 'mld "
+                     "ipython' instead.")
 
 
 # This function handles the 'help' query
