@@ -6,7 +6,7 @@ Installation & Use
 ==================
 How to install
 --------------
-*MLDatabase* can be easily installed by cloning the `repository`_ and installing it manually::
+*MLDatabase* can be easily installed by cloning the `repository`_ and installing it manually (note that it requires Python 3.6+)::
 
     $ git clone https://github.com/1313e/MLDatabase
     $ cd MLDatabase
