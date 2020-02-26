@@ -301,8 +301,7 @@ def cli_update():
         sys.exit()
 
     # Create the lock-file
-    with open(lock_file, 'w'):
-        pass
+    os.mknod(lock_file, 0o600)
 
     # Wrap in try-statement to ensure lock-file is removed afterward
     try:
