@@ -893,6 +893,8 @@ def main():
         parser.print_help()
     # Else, call the corresponding function
     else:
+        # Make sure that the current user permission mask is set properly
+        os.umask(0o002)
         ARGS.func()
 
 
