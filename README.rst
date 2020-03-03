@@ -101,7 +101,7 @@ Within a Python script
 It is also possible to access an existing database from within a Python script using the ``open_database`` context manager.
 This context manager (see `here <https://docs.python.org/3/reference/datamodel.html#context-managers>`_ for info) allows for an existing database to be safely accessed from within any Python script (or a normal IPython session if you wish) in the same way as the ``mld ipython`` command.
 
-The context manager takes a single optional argument ``mld_dir``, which is equivalent to the optional ``-d``/``--dir`` argument when using the command line interface.
+The context manager takes a single optional argument ``exp_dir``, which is equivalent to the optional ``-d``/``--dir`` argument when using the command line interface.
 As with the ``mld ipython`` command, this context manager yields the database as a vaex DataFrame object.
 See https://vaex.readthedocs.io/en/latest/tutorial.html for how to interact with them.
 

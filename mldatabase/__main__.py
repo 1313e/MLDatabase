@@ -316,17 +316,17 @@ def cli_update():
 # %% FUNCTION DEFINITIONS
 # This function returns a context manager used for opening and closing database
 @contextmanager
-def open_database(mld_dir=None):
+def open_database(exp_dir=None):
     """
     Context manager for accessing an existing micro-lensing database in the
-    provided `mld_dir` as a :obj:`~vaex.dataframe.DataFrame` object.
+    provided `exp_dir` as a :obj:`~vaex.dataframe.DataFrame` object.
 
     See https://vaex.readthedocs.io/en/latest/tutorial.html for how to interact
     with vaex DataFrames.
 
     Optional
     --------
-    mld_dir : str or None. Default: None
+    exp_dir : str or None. Default: None
         The relative or absolute path to the directory that contains an
         existing micro-lensing database.
         If *None*, the current working directory is used.
@@ -337,7 +337,7 @@ def open_database(mld_dir=None):
     ------
     df : :obj:`~vaex.dataframe.DataFrame` object
         The vaex DataFrame that contains all of the data stored in the database
-        in `mld_dir`.
+        in `exp_dir`.
 
     """
 
@@ -347,19 +347,22 @@ def open_database(mld_dir=None):
 
     # If it is not, obtain the mld directory manually
     except NameError:
+        # Determine directory with exposure files
+        exp_dir = path.abspath(exp_dir if exp_dir else '.')
+
         # Determine directory with database files
-        mld = path.join(path.abspath(mld_dir if mld_dir else '.'), MLD_NAME)
+        mld = path.join(exp_dir, MLD_NAME)
 
         # Check if it exists
         if not path.exists(mld):
             # If not, raise error
-            raise OSError("Input argument 'mld_dir' does not contain a "
-                          "micro-lensing database!")
+            raise OSError(f"Input argument 'exp_dir' ({exp_dir!r}) does not "
+                          f"contain a micro-lensing database!")
 
         # If it does exist, make sure that the update-lock file does not exist
         if path.exists(path.join(mld, '.mld_update.lock')):
             # If the update-lock file does exist, raise error
-            raise OSError(f"Database in input argument 'mld_dir' ({mld_dir!r})"
+            raise OSError(f"Database in input argument 'exp_dir' ({exp_dir!r})"
                           f" is currently being updated! Access is not "
                           f"possible!")
 
