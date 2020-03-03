@@ -38,7 +38,7 @@ Existing databases can be updated with the ``mld update`` command.
 Calling this command when no database exists in ``DIR`` will result in an error.
 
 When updating a database, the program determines all DECam exposure CSV-files in ``DIR`` that are valid according to a list of conditions.
-By default, all exposures that the program can find will be used, but you can, for example, only select the first 10 exposures that it can find with ``mld update -n 10`` (``-n`` can also be used with any command that calls ``mld update``, e.g., ``mld init`` and ``mlt reset``).
+By default, all exposures that the program can find will be used, but you can, for example, only select the first 10 exposures that it can find with ``mld update -n 10`` (``-n`` can also be used with any command that calls ``mld update``, e.g., ``mld init`` and ``mld reset``).
 It then compares this list of exposures against all exposures the database already knows about.
 All exposures that are either missing (the exposure data is not included in the database) or outdated (the exposure data was updated after it was included) will be added to the database.
 
