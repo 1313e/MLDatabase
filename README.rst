@@ -23,6 +23,8 @@ Calling this from the command line with no arguments at all, will show the help 
 It takes an optional ``-d``/``--dir`` argument (which defaults to the current directory) which is the directory containing all the DECam exposure files in CSV-format.
 This directory is referred to as ``DIR``.
 
+The three most important commands (``mld init``; ``mld update``; and ``mld ipython``) are described below.
+
 Initializing a database
 #######################
 A database can be created with the command ``mld init`` in a proper directory ``DIR``.
