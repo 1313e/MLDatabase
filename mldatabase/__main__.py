@@ -5,6 +5,7 @@
 # Built-in imports
 import argparse
 from contextlib import contextmanager
+from glob import glob
 from itertools import islice
 import os
 from os import path
@@ -378,6 +379,15 @@ def open_database(exp_dir=None):
                   f"being updated! Access is not possible!")
             sys.exit()
 
+    # Obtain list of non-merged exposures
+    temp_files = glob(path.join(mld, TEMP_EXP_FILE.replace('{}', '*')))
+
+    # If temp_files is not empty, raise warning
+    if temp_files:
+        print(f"WARNING: Database in provided DIR {ARGS.dir!r} was interrupted"
+              f" during last update. It can be accessed, but it is recommended"
+              f" to finish the update with 'mld update -n 0' first!")
+
     # Obtain the path to the master exposure file
     master_exp_file = path.join(mld, MASTER_EXP_FILE)
 
@@ -472,57 +482,62 @@ def perform_update():
             if(path.getmtime(exp_files[0]) > mtime):
                 # If so, add to expnums_outdated
                 expnums_outdated.append(expnum)
+                continue
             else:
                 # If not, remove from dict
                 exp_dict.pop(expnum)
 
-                # Determine path to temporary HDF5-file of exposure
-                temp_hdf5 = path.join(ARGS.mld, TEMP_EXP_FILE.format(expnum))
+        # Determine path to temporary HDF5-file of exposure
+        temp_hdf5 = path.join(ARGS.mld, TEMP_EXP_FILE.format(expnum))
 
-                # If it already exists, add it to temp_files
-                if path.exists(temp_hdf5):
-                    temp_files.append(temp_hdf5)
+        # If it already exists, add it to temp_files
+        if path.exists(temp_hdf5):
+            temp_files.append(temp_hdf5)
 
     # Print the number of exposure files found
     n_expnums_outdated = len(expnums_outdated)
     n_expnums_new = len(exp_dict)-n_expnums_outdated
-    print(f"Found {n_expnums:,} exposure files, of which {n_expnums_new:,} are"
-          f" new and {n_expnums_outdated:,} are outdated.")
+    n_expnums_temp = len(temp_files)
+    print(f"\nFound {n_expnums:,} exposure files, of which {n_expnums_new:,} "
+          f"are new and {n_expnums_outdated:,} are outdated. Also found "
+          f"{n_expnums_temp:,} processed exposure files that require merging.")
 
-    # If exp_dict or temp_files contains at least 1 item
-    if exp_dict or temp_files:
-        # Import vaex
-        import vaex
-
+    # If exp_dict contains at least 1 item
+    if exp_dict:
         # Create tqdm iterator for processing
         exp_iter = tqdm(exp_dict.items(), desc="Processing exposure files",
                         dynamic_ncols=True)
 
+        # Process all exposure files
+        try:
+            for expnum, exp_files in exp_iter:
+                # Set which exposure is being processed in exp_iter
+                exp_iter.set_postfix_str(path.basename(exp_files[0]))
+
+                # Process this exposure
+                temp_files.append(process_exp_files(expnum, exp_files))
+
+        # If a KeyboardInterrupt is raised, update database with progress
+        except KeyboardInterrupt:
+            print("WARNING: Processing has been interrupted. Updating "
+                  "database with currently processed exposures.")
+
         # Open master file
         with h5py.File(ARGS.master_file, 'r+') as m_file:
-            # Process all exposure files
-            try:
-                for expnum, exp_files in exp_iter:
-                    # Set which exposure is being processed in exp_iter
-                    exp_iter.set_postfix_str(path.basename(exp_files[0]))
-
-                    # Process this exposure
-                    temp_files.append(
-                        process_exp_files(m_file, expnum, exp_files))
-
-            # If a KeyboardInterrupt is raised, update database with progress
-            except KeyboardInterrupt:
-                print("WARNING: Processing has been interrupted. Updating "
-                      "database with currently processed exposures.")
-
             # Obtain the total number of exposures now
             n_expnums_known = m_file.attrs['n_expnums']
 
+    # If temp_files contains at least 1 item
+    if temp_files:
+        # Import vaex
+        import vaex
+
         # Update database
-        print("Updating database with processed exposures (NOTE: This may take"
-              " a while for large databases.).")
+        print("\nUpdating database with processed exposures (NOTE: This may "
+              "take a while for large databases).")
 
         # Divide temp_files up into lists of length 100 with last of length 150
+        n_temp = len(temp_files)
         temp_files = [temp_files[slc] for slc in dyn_range(len(temp_files))]
 
         # If the master exposure file exists and there are outdated exposures
@@ -554,9 +569,16 @@ def perform_update():
             # Rename master_temp_file to master exposure file name
             os.rename(master_temp_file, ARGS.master_exp_file)
 
+        # Create tqdm iterator for merging
+        temp_iter = tqdm(desc="Merging processed exposure files", total=n_temp,
+                         dynamic_ncols=True)
+
         # Loop over all temporary exposure HDF5-files
         # TODO: Figure out how to avoid copying over all the data every time
         for temp_files_list in temp_files:
+            # Determine number of files in this list
+            n_temp_list = len(temp_files_list)
+
             # Wrap in try-statement to ensure files are closed
             try:
                 # Open all temporary exposure HDF5-files in this list
@@ -586,8 +608,14 @@ def perform_update():
             # Rename master_temp_file to master exposure file name
             os.rename(master_temp_file, ARGS.master_exp_file)
 
+            # Update tqdm iterator
+            temp_iter.update(n_temp_list)
+
+        # Close the tqdm iterator
+        temp_iter.close()
+
         # Determine all objids that are known
-        print("Determining all objects in the database.")
+        print("\nDetermining all objects in the database.")
         try:
             master_df = vaex.open(ARGS.master_exp_file)
             objids, counts = np.unique(master_df['objid'].values,
@@ -625,7 +653,7 @@ def perform_update():
 
 
 # This function processes an exposure file
-def process_exp_files(m_file, expnum, exp_files):
+def process_exp_files(expnum, exp_files):
     # Import vaex
     import vaex
 
@@ -655,18 +683,20 @@ def process_exp_files(m_file, expnum, exp_files):
     exp_file_hdf5 = path.join(ARGS.mld, TEMP_EXP_FILE.format(expnum))
     exp_data.export_hdf5(exp_file_hdf5)
 
-    # Check if this exposure has been processed before
-    expnums = m_file['expnums']['expnum']
-    expnums = expnums if expnums.size else expnums['expnum']
-    index = np.nonzero(expnums == expnum)[0]
+    # Open master file
+    with h5py.File(ARGS.master_file, 'r+') as m_file:
+        # Check if this exposure has been processed before
+        expnums = m_file['expnums']['expnum']
+        expnums = expnums if expnums.size else expnums['expnum']
+        index = np.nonzero(expnums == expnum)[0]
 
-    # Save that this exposure has been processed
-    if index.size:
-        m_file['expnums'][index[0]] = (*xtr_data, path.getmtime(exp_file))
-    else:
-        m_file['expnums'].resize(m_file.attrs['n_expnums']+1, axis=0)
-        m_file['expnums'][-1] = (*xtr_data, path.getmtime(exp_file))
-        m_file.attrs['n_expnums'] += 1
+        # Save that this exposure has been processed
+        if index.size:
+            m_file['expnums'][index[0]] = (*xtr_data, path.getmtime(exp_file))
+        else:
+            m_file['expnums'].resize(m_file.attrs['n_expnums']+1, axis=0)
+            m_file['expnums'][-1] = (*xtr_data, path.getmtime(exp_file))
+            m_file.attrs['n_expnums'] += 1
 
     # Return exp_file_hdf5
     return(exp_file_hdf5)
