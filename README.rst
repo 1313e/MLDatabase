@@ -1,6 +1,6 @@
 MLDatabase
 ==========
-*MLDatabase* is a Python 3 CLI-package for managing the DECam exposure CSV-exposure files and creating a micro-lensing event database.
+*MLDatabase* is a Python 3 CLI-package for managing the DECam exposure CSV-files and creating a micro-lensing event database.
 
 Installation & Use
 ==================
