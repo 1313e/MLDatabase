@@ -57,7 +57,7 @@ SIZE_SUFFIXES = ['bytes',                           # File size suffixes
                  'EiB',
                  'ZiB',
                  'YiB']
-TEMP_EXP_FILE = 'exp{}.hdf5'                        # Name of temp exp file
+TEMP_EXP_FILE = 'temp_exp{}.hdf5'                   # Name of temp exp file
 XTR_HEADER = {                                      # Header of xtr/epochs file
     'expnum': int,
     'hjd': float,

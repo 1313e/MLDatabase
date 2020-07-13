@@ -9,10 +9,11 @@ from glob import glob
 from itertools import islice
 import os
 from os import path
+import pwd
 import re
 import shutil
 import sys
-from tempfile import mkstemp
+from tempfile import mktemp
 import time
 from traceback import print_exc
 
@@ -22,6 +23,7 @@ import h5py
 import numpy as np
 import pandas as pd
 import prompt_toolkit as ptk
+import psutil
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import WordCompleter
 from prompt_toolkit.history import FileHistory
@@ -302,7 +304,7 @@ def cli_update():
         sys.exit()
 
     # Create the lock-file
-    os.mknod(lock_file, 0o600)
+    os.symlink(str(os.getpid()), lock_file)
 
     # Wrap in try-statement to ensure lock-file is removed afterward
     try:
@@ -360,12 +362,14 @@ def open_database(exp_dir=None):
             raise OSError(f"Input argument 'exp_dir' ({exp_dir!r}) does not "
                           f"contain a micro-lensing database!")
 
+        # Remove stale lock-files
+        remove_stale_lock_files(mld)
+
         # If it does exist, make sure that the update-lock file does not exist
         if path.exists(path.join(mld, '.mld_update.lock')):
             # If the update-lock file does exist, raise error
-            raise OSError(f"Database in input argument 'exp_dir' ({exp_dir!r})"
-                          f" is currently being updated! Access is not "
-                          f"possible!")
+            raise OSError(f"Database in provided DIR ({exp_dir!r}) is "
+                          f"currently being updated! Access is not possible!")
 
     # If it is, check if the database exists
     else:
@@ -379,14 +383,17 @@ def open_database(exp_dir=None):
                   f"being updated! Access is not possible!")
             sys.exit()
 
+        # Save ARGS.dir as exp_dir
+        exp_dir = ARGS.dir
+
     # Obtain list of non-merged exposures
     temp_files = glob(path.join(mld, TEMP_EXP_FILE.replace('{}', '*')))
 
     # If temp_files is not empty, raise warning
     if temp_files:
-        print(f"WARNING: Database in provided DIR {ARGS.dir!r} was interrupted"
-              f" during last update. It can be accessed, but it is recommended"
-              f" to finish the update with 'mld update -n 0' first!")
+        print(f"WARNING: Database in provided DIR {exp_dir!r} was interrupted "
+              f"during last update. It can be accessed, but it is recommended "
+              f"to finish the update with 'mld update -n 0' first!")
 
     # Obtain the path to the master exposure file
     master_exp_file = path.join(mld, MASTER_EXP_FILE)
@@ -400,8 +407,8 @@ def open_database(exp_dir=None):
     # Wrap within try-finally statement
     try:
         # Create a lock-file stating that the database is open for access
-        fd, filename = mkstemp('.lock', '.mld_access_', mld)
-        os.close(fd)
+        filename = mktemp('.lock', '.mld_access_', mld)
+        os.symlink(str(os.getpid()), filename)
 
         # Yield the database
         yield df
@@ -707,12 +714,8 @@ def check_database_exist(req):
     # Check if the database exists
     exists = path.exists(ARGS.mld)
 
-    # If exists and req are equal, return
-    if req is exists:
-        return
-
-    # Else, raise the proper error
-    else:
+    # If exists and req are not equal, raise error
+    if req is not exists:
         # If database exists
         if exists:
             print(f"ERROR: Provided DIR {ARGS.dir!r} already contains a "
@@ -723,6 +726,77 @@ def check_database_exist(req):
             print(f"ERROR: Provided DIR {ARGS.dir!r} does not contain a "
                   f"micro-lensing database!")
             sys.exit()
+
+    # If database exists, remove stale lock-files
+    if exists:
+        remove_stale_lock_files(ARGS.mld)
+
+
+# This function removes all stale lock-files
+def remove_stale_lock_files(mld_dir):
+    """
+
+
+    """
+
+    # Obtain the name of the current user
+    login = os.getlogin()
+
+    # Obtain all lock-files in mld_dir
+    lock_files = glob(path.join(mld_dir, ".*.lock"))
+
+    # Loop over all lock_files
+    for lock_file in lock_files:
+        # Obtain stats on this lock_file
+        stat = os.stat(lock_file, follow_symlinks=False)
+
+        # Obtain the process ID this lock_file is connected to
+        pid = int(os.readlink(lock_file))
+
+        # Try to create this process
+        try:
+            p = psutil.Process(pid)
+
+        # If this process does not exist, delete the lock_file if too old
+        except psutil.NoSuchProcess:
+            # Obtain creation time of lock_file
+            st_ctime = stat.st_ctime
+
+            # Obtain current time
+            ctime = time.time()
+
+            # If lock_file is more than a week old, remove it
+            if(ctime-st_ctime >= 604800):
+                os.remove(lock_file)
+
+        # If this process is not owned by the current user
+        except psutil.AccessDenied:
+            # Obtain the owner of this lock_file
+            owner = pwd.getpwuid(stat.st_uid).pw_name
+
+            # If the lock_file is owned by the current user, delete lock_file
+            if(owner == login):
+                os.remove(lock_file)
+
+        # Else, check if this process involves Python or MLD
+        else:
+            # Obtain all arguments supplied to process
+            cmd = p.cmdline()
+
+            # Check for every argument if it is a path
+            for arg in cmd:
+                if path.isfile(arg):
+                    # If so, obtain its basename
+                    base = path.basename(arg)
+
+                    # Check if the base is 'python' or 'mld'
+                    if base in ('python', 'mld'):
+                        # If so, break
+                        break
+
+            # If no arguments match, delete the lock_file
+            else:
+                os.remove(lock_file)
 
 
 # This function creates a generator that returns dynamically sized slices
