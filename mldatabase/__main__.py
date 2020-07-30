@@ -740,7 +740,9 @@ def remove_stale_lock_files(mld_dir):
     """
 
     # Obtain the name of the current user
-    login = os.getlogin()
+    login = os.environ.get('USER')
+    if login is None:
+        login = os.getlogin()
 
     # Obtain all lock-files in mld_dir
     lock_files = glob(path.join(mld_dir, ".*.lock"))
