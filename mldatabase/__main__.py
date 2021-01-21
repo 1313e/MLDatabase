@@ -4,6 +4,7 @@
 # TODO: Use 'argcomplete'?
 # Built-in imports
 import argparse
+from collections import Counter
 from contextlib import contextmanager
 from glob import glob
 from itertools import islice
@@ -31,7 +32,7 @@ from mldatabase._globals import (
     REQ_FILES, SIZE_SUFFIXES, TEMP_EXP_FILE, XTR_HEADER)
 
 # All declaration
-__all__ = ['open_database']
+__all__ = ['get_objid_counter', 'open_database']
 
 
 # %% GLOBALS
@@ -117,15 +118,32 @@ def cli_init():
 def cli_ipython():
     # Open the database
     with open_database() as df:
+        # Create user namespace dictionary
+        user_ns = {'df': df}
+
+        # Create banner
+        banner = ("Starting IPython session. Database is available as 'df', a "
+                  "vaex DataFrame.")
+
+        # Check if the objid_cntr was requested
+        if ARGS.counter:
+            # Obtain the counter
+            objid_cntr = get_objid_counter()
+
+            # Add to namespace
+            user_ns['objid_cntr'] = objid_cntr
+
+            # Add additional text to banner
+            banner += " Objid counter is available as 'objid_cntr', a Counter."
+
         # Embed an IPython console
         IPython.embed(
-            banner1=("Starting IPython session. Database is available as 'df',"
-                     " a vaex DataFrame.\n"
+            banner1=(f"{banner}\n"
                      "See https://vaex.readthedocs.io/en/latest/tutorial.html "
                      "for how to interact with vaex DataFrames.\n"),
             exit_msg="Leaving IPython session. Database will be closed.",
             colors='Neutral',
-            user_ns={'df': df})
+            user_ns=user_ns)
 
 
 # This function handles the 'reset' subcommand
@@ -258,6 +276,39 @@ def cli_update():
 
 
 # %% FUNCTION DEFINITIONS
+# This function processes the exp_dir provided through a function
+def get_dirs(exp_dir=None):
+    # Check if ARGS is available
+    try:
+        mld = ARGS.mld
+        exp_dir = ARGS.dir
+
+    # If it is not, obtain the mld directory manually
+    except AttributeError:
+        # Determine directory path
+        ARGS.dir = path.abspath(exp_dir if exp_dir else '.')
+
+        # Check if provided dir exists
+        if not path.exists(ARGS.dir):
+            # If not, raise error
+            raise OSError(f"Provided DIR {ARGS.dir!r} does not exist!")
+
+        # Obtain absolute path to database
+        ARGS.mld = path.join(ARGS.dir, MLD_NAME)
+        ARGS.master_file = path.join(ARGS.mld, MASTER_FILE)
+        ARGS.master_exp_file = path.join(ARGS.mld, MASTER_EXP_FILE)
+
+        # Set CLI_flag to False
+        ARGS.CLI_flag = False
+
+        # Obtain mld and exp_dir
+        mld = ARGS.mld
+        exp_dir = ARGS.dir
+
+    # Return mld and exp_dir
+    return(mld, exp_dir)
+
+
 # This function returns a context manager used for opening and closing database
 @contextmanager
 def open_database(exp_dir=None):
@@ -285,32 +336,8 @@ def open_database(exp_dir=None):
 
     """
 
-    # Check if ARGS is available
-    try:
-        mld = ARGS.mld
-        exp_dir = ARGS.dir
-
-    # If it is not, obtain the mld directory manually
-    except AttributeError:
-        # Determine directory path
-        ARGS.dir = path.abspath(exp_dir if exp_dir else '.')
-
-        # Check if provided dir exists
-        if not path.exists(ARGS.dir):
-            # If not, raise error
-            raise OSError(f"Provided DIR {ARGS.dir!r} does not exist!")
-
-        # Obtain absolute path to database
-        ARGS.mld = path.join(ARGS.dir, MLD_NAME)
-        ARGS.master_file = path.join(ARGS.mld, MASTER_FILE)
-        ARGS.master_exp_file = path.join(ARGS.mld, MASTER_EXP_FILE)
-
-        # Set CLI_flag to False
-        ARGS.CLI_flag = False
-
-        # Obtain mld and exp_dir
-        mld = ARGS.mld
-        exp_dir = ARGS.dir
+    # Obtain mld and exp_dir
+    mld, exp_dir = get_dirs(exp_dir)
 
     # Check that database file exists
     check_database_exists(True)
@@ -350,6 +377,48 @@ def open_database(exp_dir=None):
         finally:
             # Close database
             df.close()
+
+
+# This function returns a Counter object with the number of objid data points
+def get_objid_counter(exp_dir=None):
+    """
+    Accesses an existing micro-lensing database in the provided `exp_dir` and
+    returns a :obj:`~collections.Counter` object that stores the number of
+    times each *objid* can be found in the database.
+
+    Optional
+    --------
+    exp_dir : str or None. Default: None
+        The relative or absolute path to the directory that contains an
+        existing micro-lensing database.
+        If *None*, the current working directory is used.
+        This argument is equivalent to the optional `-d`/`--dir` argument when
+        using the command-line interface.
+
+    Yields
+    ------
+    cntr : :obj:`~collections.Counter` object
+        The Counter object that contains the number of times each *objid* can
+        be found in the database in `exp_dir`.
+
+    """
+
+    # Obtain mld and exp_dir
+    mld, exp_dir = get_dirs(exp_dir)
+
+    # Open the master hdf5-file
+    with h5py.File(ARGS.master_file, 'r') as file:
+        # Obtain the objids dataset
+        objids = file['objids'][()]
+
+    # Create empty counter
+    counter = Counter()
+
+    # Add objids to it
+    counter.update(dict(zip(objids['objid'], objids['count'])))
+
+    # Return counter
+    return(counter)
 
 
 # This function performs the update process
@@ -810,6 +879,13 @@ def main():
                      "existing micro-lensing database in DIR"),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         add_help=True)
+
+    # Add optional 'counter' argument
+    ipython_parser.add_argument(
+        '--counter',
+        help="Additionally provide an objid counter in the IPython console",
+        action='store_true',
+        dest='counter')
 
     # Set defaults for ipython_parser
     ipython_parser.set_defaults(func=cli_ipython)

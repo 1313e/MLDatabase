@@ -61,6 +61,9 @@ This command starts a special IPython session in the terminal that provides safe
 The IPython session starts with the database already being available in the namespace, which is a vaex DataFrame called ``df``.
 See https://vaex.readthedocs.io/en/latest/tutorial.html for how to interact with them.
 
+Additionally, if one initializes the IPython session with ``mld ipython --counter``, a Counter object called ``objid_cntr`` will be available as well.
+This Counter object contains the number of times each *objid* can be found in the database, which is useful when one wants to know all objids that appear at least a specific number of times in the database without having to determine this from the data itself.
+
 In this IPython session, the database can be interacted with using any of the functions, methods, etc. that a vaex DataFrame accepts.
 Below is a small example script for interacting with the database in a few different ways:
 
@@ -104,6 +107,8 @@ This context manager (see `here <https://docs.python.org/3/reference/datamodel.h
 The context manager takes a single optional argument ``exp_dir``, which is equivalent to the optional ``-d``/``--dir`` argument when using the command line interface.
 As with the ``mld ipython`` command, this context manager yields the database as a vaex DataFrame object.
 See https://vaex.readthedocs.io/en/latest/tutorial.html for how to interact with them.
+
+The ``objid_cntr`` Counter object mentioned above can also be accessed from within a Python script using the ``get_objid_counter`` function.
 
 Below is the same example script used above, but this time using the context manager for accessing the database:
 
