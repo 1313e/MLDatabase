@@ -19,10 +19,6 @@ __all__ = ['DIR_PATH', 'EXIT_KEYWORDS', 'EXP_HEADER', 'EXP_REGEX',
 
 # %% PACKAGE GLOBALS
 DIR_PATH = path.abspath(path.dirname(__file__))     # Path to this directory
-EXIT_KEYWORDS = ['exit',                            # Exit prompt keywords
-                 'exit()',
-                 'quit',
-                 'q']
 EXP_HEADER = {                                      # Header of exposure file
     'objid': int,
     'hjd': float,

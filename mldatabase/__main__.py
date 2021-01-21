@@ -9,33 +9,26 @@ from glob import glob
 from itertools import islice
 import os
 from os import path
-import pwd
+from pkg_resources import parse_version
 import re
 import shutil
 import sys
-from tempfile import mktemp
+from tempfile import NamedTemporaryFile
 import time
-from traceback import print_exc
 
 # Package imports
 import IPython
 import h5py
 import numpy as np
 import pandas as pd
-import prompt_toolkit as ptk
-import psutil
-from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
-from prompt_toolkit.completion import WordCompleter
-from prompt_toolkit.history import FileHistory
-from prompt_toolkit.validation import DummyValidator
 from sortedcontainers import SortedDict as sdict
 from tqdm import tqdm
 
 # MLDatabase imports
 from mldatabase import __version__
 from mldatabase._globals import (
-    EXIT_KEYWORDS, EXP_HEADER, EXP_REGEX, MASTER_EXP_FILE, MASTER_FILE,
-    MLD_NAME, PKG_NAME, REQ_FILES, SIZE_SUFFIXES, TEMP_EXP_FILE, XTR_HEADER)
+    EXP_HEADER, EXP_REGEX, MASTER_EXP_FILE, MASTER_FILE, MLD_NAME, PKG_NAME,
+    REQ_FILES, SIZE_SUFFIXES, TEMP_EXP_FILE, XTR_HEADER)
 
 # All declaration
 __all__ = ['open_database']
@@ -46,8 +39,9 @@ __all__ = ['open_database']
 main_desc = (f"{PKG_NAME}; a Python CLI package for making micro-lensing "
              f"databases from DECam exposures.")
 
-# Define list of all query keywords
-QUERY_KEYWORDS = []
+# Define global ARGS
+global ARGS
+ARGS = argparse.Namespace()
 
 
 # %% CLASS DEFINITIONS
@@ -102,15 +96,14 @@ class HelpFormatterWithSubCommands(argparse.ArgumentDefaultsHelpFormatter):
 # This function handles the 'init' subcommand
 def cli_init():
     # Check if a database already exists in this folder
-    check_database_exist(False)
+    check_database_exists(False)
 
     # Check if these files are present
     for req_file in REQ_FILES:
         if not path.exists(path.join(ARGS.dir, req_file)):
             # If not, raise error and exit
-            print(f"ERROR: Provided DIR {ARGS.dir!r} does not contain required"
-                  f" files for micro-lensing database!")
-            sys.exit()
+            raise_error(f"Provided DIR {ARGS.dir!r} does not contain required"
+                        f" files for micro-lensing database!")
 
     # Make the database directory
     print(f"Initializing micro-lensing database in {ARGS.dir!r}.")
@@ -135,58 +128,10 @@ def cli_ipython():
             user_ns={'df': df})
 
 
-# This function handles the 'query' subcommand
-def cli_query():
-    # Open database
-    with open_database() as df:
-        # Add df to ARGS
-        ARGS.df = df
-
-        # Create list of valid keywords
-        keywords = [*EXIT_KEYWORDS, *QUERY_KEYWORDS]
-
-        # Initialize CLI objects
-        # TODO: Write auto-suggest only matching against allowed words
-        auto_suggest = AutoSuggestFromHistory()
-        completer = WordCompleter(keywords)
-        validator = DummyValidator()
-
-        # Start session
-        session = ptk.PromptSession(
-            message='query> ',
-            bottom_toolbar=("Type 'help' for an overview of all valid "
-                            "keywords. Type 'exit' to exit the session."),
-            history=FileHistory(path.join(ARGS.mld, 'history.txt')),
-            enable_history_search=True,
-            auto_suggest=auto_suggest,
-            completer=completer,
-            complete_while_typing=False,
-            validator=validator,
-            validate_while_typing=True)
-
-        # Keep looping over the prompts until exited by the user
-        while True:
-            # Wrap in try-statement to catch and simply print exception
-            try:
-                # Prompt for an input from the user
-                inputs = session.prompt()
-
-                # Check if the user wants to exit, and break the loop if so
-                if inputs in EXIT_KEYWORDS:
-                    break
-
-                # Process the inputs of the user
-                process_query_inputs(inputs)
-
-            # If an exception is raised, simply print the entire traceback
-            except Exception:
-                print_exc()
-
-
 # This function handles the 'reset' subcommand
 def cli_reset():
     # Check if a database already exists in this folder
-    check_database_exist(True)
+    check_database_exists(True)
 
     # Determine all files in the database directory as a string
     mld_files_str = str(next(os.walk(ARGS.mld))[2])
@@ -194,9 +139,8 @@ def cli_reset():
     # If the database exists, make sure currently no lock files exist
     if '.lock' in mld_files_str:
         # If a lock-file already exists, raise error and exit
-        print(f"ERROR: Database in provided DIR {ARGS.dir!r} is currently "
-              f"being used! Reset is not possible!")
-        sys.exit()
+        raise_error(f"Database in provided DIR {ARGS.dir!r} is currently "
+                    f"being used! Reset is not possible!")
 
     # Delete the entire database
     shutil.rmtree(ARGS.mld)
@@ -281,7 +225,7 @@ def cli_status():
 # This function handles the 'update' subcommand
 def cli_update():
     # Check if a database already exists in this folder
-    check_database_exist(True)
+    check_database_exists(True)
 
     # Determine path to update-lock file
     lock_file = path.join(ARGS.mld, '.mld_update.lock')
@@ -292,19 +236,16 @@ def cli_update():
     # If the database exists, make sure currently no lock files exist
     if '.lock' in mld_files_str:
         # If a lock-file already exists, raise proper error
-        if path.basename(lock_file) in mld_files_str:
-            print(f"ERROR: Database in provided DIR {ARGS.dir!r} is currently "
-                  f"already being updated by a different process! Update is "
-                  f"not possible!")
+        if '.mld_update.lock' in mld_files_str:
+            raise_error(f"Database in provided DIR {ARGS.dir!r} is currently "
+                        f"already being updated by a different process! Update"
+                        f" is not possible!")
         else:
-            print(f"ERROR: Database in provided DIR {ARGS.dir!r} is currently "
-                  f"being accessed! Update is not possible!")
-
-        # Exit CLI
-        sys.exit()
+            raise_error(f"Database in provided DIR {ARGS.dir!r} is currently "
+                        f"being accessed! Update is not possible!")
 
     # Create the lock-file
-    os.symlink(str(os.getpid()), lock_file)
+    os.mknod(lock_file)
 
     # Wrap in try-statement to ensure lock-file is removed afterward
     try:
@@ -347,44 +288,38 @@ def open_database(exp_dir=None):
     # Check if ARGS is available
     try:
         mld = ARGS.mld
+        exp_dir = ARGS.dir
 
     # If it is not, obtain the mld directory manually
-    except NameError:
-        # Determine directory with exposure files
-        exp_dir = path.abspath(exp_dir if exp_dir else '.')
+    except AttributeError:
+        # Determine directory path
+        ARGS.dir = path.abspath(exp_dir if exp_dir else '.')
 
-        # Determine directory with database files
-        mld = path.join(exp_dir, MLD_NAME)
-
-        # Check if it exists
-        if not path.exists(mld):
+        # Check if provided dir exists
+        if not path.exists(ARGS.dir):
             # If not, raise error
-            raise OSError(f"Input argument 'exp_dir' ({exp_dir!r}) does not "
-                          f"contain a micro-lensing database!")
+            raise OSError(f"Provided DIR {ARGS.dir!r} does not exist!")
 
-        # Remove stale lock-files
-        remove_stale_lock_files(mld)
+        # Obtain absolute path to database
+        ARGS.mld = path.join(ARGS.dir, MLD_NAME)
+        ARGS.master_file = path.join(ARGS.mld, MASTER_FILE)
+        ARGS.master_exp_file = path.join(ARGS.mld, MASTER_EXP_FILE)
 
-        # If it does exist, make sure that the update-lock file does not exist
-        if path.exists(path.join(mld, '.mld_update.lock')):
-            # If the update-lock file does exist, raise error
-            raise OSError(f"Database in provided DIR ({exp_dir!r}) is "
-                          f"currently being updated! Access is not possible!")
+        # Set CLI_flag to False
+        ARGS.CLI_flag = False
 
-    # If it is, check if the database exists
-    else:
-        # Check that database file exists
-        check_database_exist(True)
-
-        # If so, make sure that the update-lock file does not exist
-        if path.exists(path.join(mld, '.mld_update.lock')):
-            # If the update-lock file does exist, raise error and exit
-            print(f"ERROR: Database in provided DIR {ARGS.dir!r} is currently "
-                  f"being updated! Access is not possible!")
-            sys.exit()
-
-        # Save ARGS.dir as exp_dir
+        # Obtain mld and exp_dir
+        mld = ARGS.mld
         exp_dir = ARGS.dir
+
+    # Check that database file exists
+    check_database_exists(True)
+
+    # If so, make sure that the update-lock file does not exist
+    if path.exists(path.join(mld, '.mld_update.lock')):
+        # If the update-lock file does exist, raise error and exit
+        raise_error(f"Database in provided DIR {exp_dir!r} is currently "
+                    f"being updated! Access is not possible!")
 
     # Obtain list of non-merged exposures
     temp_files = glob(path.join(mld, TEMP_EXP_FILE.replace('{}', '*')))
@@ -401,25 +336,20 @@ def open_database(exp_dir=None):
     # Import vaex
     import vaex
 
-    # Open the database
-    df = vaex.open(master_exp_file)
+    # Open a lock-file
+    with NamedTemporaryFile(suffix='.lock', prefix='.mld_access_', dir=mld):
+        # Wrap within try-finally statement
+        try:
+            # Open the database
+            df = vaex.open(master_exp_file)
 
-    # Wrap within try-finally statement
-    try:
-        # Create a lock-file stating that the database is open for access
-        filename = mktemp('.lock', '.mld_access_', mld)
-        os.symlink(str(os.getpid()), filename)
+            # Yield the database
+            yield df
 
-        # Yield the database
-        yield df
-
-    # After context manager returns, clean up
-    finally:
-        # Close database
-        df.close()
-
-        # Remove the lock-file
-        os.remove(filename)
+        # After context manager returns, clean up
+        finally:
+            # Close database
+            df.close()
 
 
 # This function performs the update process
@@ -427,24 +357,10 @@ def perform_update():
     # Print that database is being updated
     print(f"Updating micro-lensing database in {ARGS.dir!r}.")
 
-#    # Obtain path to reference exposure file
-#    ref_exp_file = path.join(ARGS.dir, 'Exp0.csv')
-#
-#    # Read in the first column of this file (which should be all objids)
-#    objids = pd.read_csv(ref_exp_file, skipinitialspace=True, header=None,
-#                         names=EXP_HEADER, usecols=['objid'], squeeze=True,
-#                         dtype=EXP_HEADER, nrows=10000)
-#
-#    # If objids contains no elements, raise error and exit
-#    if objids.empty:
-#        print(f"ERROR: Reference exposure file {ref_exp_file!r} contains no "
-#              f"objects!")
-#        sys.exit()
-
     # Open the master HDF5-file, creating it if it does not exist yet
     with h5py.File(ARGS.master_file, mode='a') as m_file:
         # Set the version of MLDatabase
-        mld_version = m_file.attrs.setdefault('version', __version__)
+        m_file.attrs['version'] = __version__
 
         # Obtain what exposures the database knows about
         n_expnums_known = m_file.attrs.setdefault('n_expnums', 0)
@@ -681,10 +597,7 @@ def process_exp_files(expnum, exp_files):
     # Check if the 'expnum' column contains solely expnum
     if not (exp_data['expnum'] == expnum).evaluate().all():
         # If not, raise error and exit
-        # TODO: Should it simply be skipped instead?
-        print(f"ERROR: Exposure file {exp_file!r} contains multiple "
-              f"exposures!")
-        sys.exit()
+        raise_error(f"Exposure file {exp_file!r} contains multiple exposures!")
 
     # Export vaex DataFrame to HDF5
     exp_file_hdf5 = path.join(ARGS.mld, TEMP_EXP_FILE.format(expnum))
@@ -710,7 +623,7 @@ def process_exp_files(expnum, exp_files):
 
 
 # This function checks if the database exists and proceeds accordingly
-def check_database_exist(req):
+def check_database_exists(req):
     # Check if the database exists
     exists = path.exists(ARGS.mld)
 
@@ -718,87 +631,75 @@ def check_database_exist(req):
     if req is not exists:
         # If database exists
         if exists:
-            print(f"ERROR: Provided DIR {ARGS.dir!r} already contains a "
-                  f"micro-lensing database!")
-            sys.exit()
+            raise_error(f"Provided DIR {ARGS.dir!r} already contains a "
+                        f"micro-lensing database!")
         # If database does not exist
         else:
-            print(f"ERROR: Provided DIR {ARGS.dir!r} does not contain a "
-                  f"micro-lensing database!")
-            sys.exit()
+            raise_error(f"Provided DIR {ARGS.dir!r} does not contain a "
+                        f"micro-lensing database!")
 
-    # If database exists, remove stale lock-files
-    if exists:
-        remove_stale_lock_files(ARGS.mld)
+    # If database exists, check version and remove stale lock-files
+    if exists and path.exists(ARGS.master_file):
+        check_version()
+        remove_stale_lock_files()
+
+
+# This function checks the version of the database against installed version
+def check_version():
+    """
+
+
+    """
+
+    # Obtain the version of the database
+    with h5py.File(ARGS.master_file, 'r') as m_file:
+        mld_version = m_file.attrs['version']
+
+    # Check if package version is older than the database version
+    if(parse_version(__version__) < parse_version(mld_version)):
+        # If so, raise error and exit
+        raise_error(f"Database in provided DIR {ARGS.dir!r} was constructed "
+                    f"with a version later than the current version of "
+                    f"{PKG_NAME} (v{mld_version} > v{__version__}). Get the "
+                    f"latest version of {PKG_NAME} at "
+                    f"https://github.com/1313e/MLDatabase to use this "
+                    f"database!")
 
 
 # This function removes all stale lock-files
-def remove_stale_lock_files(mld_dir):
+def remove_stale_lock_files():
     """
 
 
     """
-
-    # Obtain the name of the current user
-    login = os.environ.get('USER')
-    if login is None:
-        login = os.getlogin()
 
     # Obtain all lock-files in mld_dir
-    lock_files = glob(path.join(mld_dir, ".*.lock"))
+    lock_files = glob(path.join(ARGS.mld, ".*.lock"))
 
     # Loop over all lock_files
     for lock_file in lock_files:
         # Obtain stats on this lock_file
         stat = os.stat(lock_file, follow_symlinks=False)
 
-        # Obtain the process ID this lock_file is connected to
-        pid = int(os.readlink(lock_file))
+        # Obtain creation time of lock_file
+        st_ctime = stat.st_ctime
 
-        # Try to create this process
-        try:
-            p = psutil.Process(pid)
+        # Obtain current time
+        ctime = time.time()
 
-        # If this process does not exist, delete the lock_file if too old
-        except psutil.NoSuchProcess:
-            # Obtain creation time of lock_file
-            st_ctime = stat.st_ctime
+        # If lock_file is more than a week old, remove it
+        if(ctime-st_ctime >= 604800):
+            os.remove(lock_file)
 
-            # Obtain current time
-            ctime = time.time()
 
-            # If lock_file is more than a week old, remove it
-            if(ctime-st_ctime >= 604800):
-                os.remove(lock_file)
-
-        # If this process is not owned by the current user
-        except psutil.AccessDenied:
-            # Obtain the owner of this lock_file
-            owner = pwd.getpwuid(stat.st_uid).pw_name
-
-            # If the lock_file is owned by the current user, delete lock_file
-            if(owner == login):
-                os.remove(lock_file)
-
-        # Else, check if this process involves Python or MLD
-        else:
-            # Obtain all arguments supplied to process
-            cmd = p.cmdline()
-
-            # Check for every argument if it is a path
-            for arg in cmd:
-                if path.isfile(arg):
-                    # If so, obtain its basename
-                    base = path.basename(arg)
-
-                    # Check if the base is 'python' or 'mld'
-                    if base in ('python', 'mld'):
-                        # If so, break
-                        break
-
-            # If no arguments match, delete the lock_file
-            else:
-                os.remove(lock_file)
+# This function raises an error properly, depending on how the database is used
+def raise_error(message):
+    # Check the value of CLI_flag and act accordingly
+    if ARGS.CLI_flag:
+        print(f"ERROR: {message}")
+        sys.exit()
+    else:
+        raise OSError(message)
 
 
 # This function creates a generator that returns dynamically sized slices
@@ -838,23 +739,6 @@ def dyn_range(n, step=100):
 
         # Return the next slice
         yield(slice(a, b))
-
-
-# %% QUERY FUNCTIONS
-# This function processes the inputs given by the user in the query session
-def process_query_inputs(inputs):
-    raise ValueError("The query system has not been implemented yet! Use 'mld "
-                     "ipython' instead.")
-
-
-# This function handles the 'help' query
-def query_help(inputs):
-    pass
-
-
-# This function handles the 'param' query
-def query_param(inputs):
-    pass
 
 
 # %% MAIN FUNCTION
@@ -930,18 +814,6 @@ def main():
     # Set defaults for ipython_parser
     ipython_parser.set_defaults(func=cli_ipython)
 
-    # QUERY COMMAND
-    # Add query subparser
-    query_parser = subparsers.add_parser(
-        'query',
-        aliases=['search'],
-        description="Query an existing micro-lensing database in DIR",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-        add_help=True)
-
-    # Set defaults for query_parser
-    query_parser.set_defaults(func=cli_query)
-
     # RESET COMMAND
     # Add reset subparser
     reset_parser = subparsers.add_parser(
@@ -995,6 +867,9 @@ def main():
     ARGS.mld = path.join(ARGS.dir, MLD_NAME)
     ARGS.master_file = path.join(ARGS.mld, MASTER_FILE)
     ARGS.master_exp_file = path.join(ARGS.mld, MASTER_EXP_FILE)
+
+    # Set CLI_flag to True
+    ARGS.CLI_flag = True
 
     # If arguments is empty (no func was provided), show help
     if 'func' not in ARGS:
